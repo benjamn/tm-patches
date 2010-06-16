@@ -802,6 +802,215 @@ diff --git a/js/src/jsexn.cpp b/js/src/jsexn.cpp
  exn_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
              JSObject **objp)
  {
+diff --git a/js/src/jsfoundprop.cpp b/js/src/jsfoundprop.cpp
+new file mode 100644
+--- /dev/null
++++ b/js/src/jsfoundprop.cpp
+@@ -0,0 +1,95 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
++ * vim: set ts=8 sw=4 et tw=99 ft=cpp:
++ *
++ * ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Mozilla SpiderMonkey JavaScript 1.9 code, released
++ * July 16, 2009.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Corporation.
++ *
++ * Contributor(s):
++ *   Ben Newman <mozilla@benjamn.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either of the GNU General Public License Version 2 or later (the "GPL"),
++ * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "jsfoundprop.h"
++#include "jsscope.h"
++
++using js::FoundProperty;
++
++JSBool
++FoundProperty::value(JSContext *cx, jsval *vp, JSBool strict) const
++{
++    if (!wasFound()) {
++        if (strict) {
++            JS_ReportError(cx, "No value found for property");
++            return JS_FALSE;
++        }
++        *vp = JSVAL_VOID;
++        return JS_TRUE;
++    }
++
++    if (isVirtual())
++        return mWhere->getProperty(cx, mId, vp);
++
++    if (isNative()) {
++        JSScopeProperty *sp = sprop();
++
++        if (sp->isMethod()) {
++            AutoScopePropertyRooter root(cx, sp);
++            JS_UNLOCK_OBJ(cx, mWhere);
++            *vp = sp->methodValue();
++            return mWhere->scope()->methodReadBarrier(cx, sp, vp);
++        }
++
++        /* Peek at the native property's slot value, without doing a Get. */
++        *vp = SPROP_HAS_VALID_SLOT(sp, mWhere->scope())
++               ? mWhere->lockedGetSlot(sp->slot)
++               : JSVAL_TRUE;
++        JS_UNLOCK_OBJ(cx, mWhere);
++    } else if (mWhere->isDenseArray()) {
++        return js_GetDenseArrayElementValue(cx, mWhere, mProp, vp);
++    } else {
++        /* XXX bad API: no way to return "defined but value unknown" */
++        *vp = JSVAL_TRUE;
++    }
++
++    return JS_TRUE;
++}
++
++JSBool
++FoundProperty::descriptor(JSContext *cx, uintN flags,
++                          JSPropertyDescriptor *desc) const
++{
++    desc->obj = mWhere;
++    desc->getter = NULL; // TODO
++    desc->setter = NULL; // TODO
++    desc->shortid = 0; // XXX Is this acceptable?
++    return (js_GetAttributes(cx, mWhere, mId, &desc->attrs) &&
++            value(cx, &desc->value));
++}
+diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
+new file mode 100644
+--- /dev/null
++++ b/js/src/jsfoundprop.h
+@@ -0,0 +1,104 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
++ * vim: set ts=8 sw=4 et tw=99 ft=cpp:
++ *
++ * ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Mozilla SpiderMonkey JavaScript 1.9 code, released
++ * July 16, 2009.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Corporation.
++ *
++ * Contributor(s):
++ *   Ben Newman <mozilla@benjamn.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either of the GNU General Public License Version 2 or later (the "GPL"),
++ * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef jsfoundprop_h_
++#define jsfoundprop_h_
++
++#include "jsapi.h"
++#include "jsobj.h"
++
++namespace js {
++
++class FoundProperty {
++    const jsid mId;
++    JSObject *mWhere;
++    JSProperty *mProp;
++
++    bool isNative() const { return wasFound() && mWhere->isNative(); }
++
++public:
++
++    FoundProperty(jsid id)
++        : mId(id)
++        , mWhere(NULL)
++        , mProp(NULL)
++    {}
++
++    /* Can't have a destructor because it might be skipped by goto. */
++
++    void set(JSObject *where = NULL,
++             JSProperty *prop = NULL)
++    {
++        JS_ASSERT(!prop || where);
++        mWhere = where;
++        mProp = prop;
++    }
++
++    FoundProperty &operator=(const FoundProperty &other) {
++        if (this != &other) {
++            JS_ASSERT(mId == other.mId);
++            mWhere = other.mWhere;
++            mProp = other.mProp;
++        }
++        return *this;
++    }
++
++    bool wasFound() const { return !!mWhere; }
++    bool isVirtual() const { return isNative() && !mProp; }
++
++    jsid id() const { return mId; }
++    JSObject *where() const { JS_ASSERT(wasFound()); return mWhere; }
++    JSScopeProperty *sprop() const { JS_ASSERT(mProp); return (JSScopeProperty *) mProp; }
++
++    // TODO Deprecate this in favor of mWhere->getProperty
++    JSBool value(JSContext *cx, jsval *vp, JSBool strict = JS_FALSE) const;
++    JSBool descriptor(JSContext *cx, uintN flags,
++                      JSPropertyDescriptor *desc) const;
++
++    void drop(JSContext *cx) {
++        if (wasFound() && mProp) {
++            mWhere->dropProperty(cx, mProp);
++            mProp = NULL; // XXX
++        }
++    }
++};
++  
++} /* namespace js { */
++
++#endif /* #ifndef jsfoundprop_h_ */
 diff --git a/js/src/jsfun.cpp b/js/src/jsfun.cpp
 --- a/js/src/jsfun.cpp
 +++ b/js/src/jsfun.cpp
@@ -4451,7 +4660,7 @@ diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
 diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
 --- a/js/src/jstypedarray.h
 +++ b/js/src/jstypedarray.h
-@@ -90,16 +90,19 @@ struct JS_FRIEND_API(ArrayBuffer) {
+@@ -90,16 +90,18 @@ struct JS_FRIEND_API(ArrayBuffer) {
  /*
   * TypedArray
   *
@@ -4460,7 +4669,6 @@ diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
   * the subclasses.
   */
  
-+/* typedef'd to JSFoundProperty in jsprvtd.h. */
 +class FoundProperty;
 +
  struct JS_FRIEND_API(TypedArray) {
@@ -4471,7 +4679,7 @@ diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
          TYPE_UINT16,
          TYPE_INT32,
          TYPE_UINT32,
-@@ -127,17 +130,17 @@ struct JS_FRIEND_API(TypedArray) {
+@@ -127,17 +129,17 @@ struct JS_FRIEND_API(TypedArray) {
      static TypedArray *fromJSObject(JSObject *obj);
  
      static JSBool prop_getBuffer(JSContext *cx, JSObject *obj, jsval id, jsval *vp);
