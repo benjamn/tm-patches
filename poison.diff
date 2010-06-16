@@ -1,5 +1,6 @@
 # HG changeset patch
 # Parent 5493dec0989bf3097d260276749836e72162494f
+Support for virtual properties (https://wiki.mozilla.org/Platform/Performance:IndexGetterSetter).
 
 diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
 --- a/js/src/jsapi.cpp
