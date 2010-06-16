@@ -1,11 +1,68 @@
 # HG changeset patch
-# Parent 5493dec0989bf3097d260276749836e72162494f
+# Parent c287fcea6684089638f846017edb83a04a3badd7
 Support for virtual properties (https://wiki.mozilla.org/Platform/Performance:IndexGetterSetter).
 
+diff --git a/js/src/Makefile.in b/js/src/Makefile.in
+--- a/js/src/Makefile.in
++++ b/js/src/Makefile.in
+@@ -164,16 +164,17 @@ CPPSRCS		= \
+ 		jsstr.cpp \
+ 		jstask.cpp \
+ 		jstypedarray.cpp \
+ 		jsutil.cpp \
+ 		jswrapper.cpp \
+ 		jsxdrapi.cpp \
+ 		jsxml.cpp \
+ 		prmjtime.cpp \
++		jsfoundprop.cpp \
+ 		$(NULL)
+ 
+ ifdef HAVE_DTRACE
+ CPPSRCS 	+= \
+ 		jsdtracef.cpp
+ endif
+ 
+ INSTALLED_HEADERS = \
+@@ -235,16 +236,17 @@ INSTALLED_HEADERS = \
+ 		jsvector.h \
+ 		jstl.h \
+ 		jshashtable.h \
+ 		jsversion.h \
+ 		jswrapper.h \
+ 		jsxdrapi.h \
+ 		jsxml.h \
+ 		prmjtime.h \
++		jsfoundprop.h \
+ 		$(NULL)
+ 
+ ifdef ENABLE_TRACEJIT
+ VPATH		+= $(srcdir)/nanojit
+ 
+ INSTALLED_HEADERS += \
+ 		jsbuiltins.h    \
+ 		Assembler.h     \
 diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
 --- a/js/src/jsapi.cpp
 +++ b/js/src/jsapi.cpp
-@@ -2983,67 +2983,33 @@ JS_ConstructObjectWithArguments(JSContex
+@@ -82,16 +82,17 @@
+ #include "jsstr.h"
+ #include "jstask.h"
+ #include "jstracer.h"
+ #include "jsdbgapi.h"
+ #include "prmjtime.h"
+ #include "jsstaticcheck.h"
+ #include "jsvector.h"
+ #include "jstypedarray.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsatominlines.h"
+ #include "jscntxtinlines.h"
+ #include "jsscopeinlines.h"
+ #include "jsobjinlines.h"
+ 
+ #if JS_HAS_XML_SUPPORT
+ #include "jsxml.h"
+@@ -2983,67 +2984,33 @@ JS_ConstructObjectWithArguments(JSContex
      CHECK_REQUEST(cx);
      if (!clasp)
          clasp = &js_ObjectClass;    /* default class is Object */
@@ -78,7 +135,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      return JS_LookupPropertyById(cx, obj, INT_TO_JSID(index), vp);
  }
  
-@@ -3061,50 +3027,49 @@ JS_LookupUCProperty(JSContext *cx, JSObj
+@@ -3061,50 +3028,49 @@ JS_LookupUCProperty(JSContext *cx, JSObj
      return atom && JS_LookupPropertyById(cx, obj, ATOM_TO_JSID(atom), vp);
  }
  
@@ -141,7 +198,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      return JS_HasPropertyById(cx, obj, INT_TO_JSID(index), foundp);
  }
  
-@@ -3123,26 +3088,24 @@ JS_HasUCProperty(JSContext *cx, JSObject
+@@ -3123,26 +3089,24 @@ JS_HasUCProperty(JSContext *cx, JSObject
  }
  
  JS_PUBLIC_API(JSBool)
@@ -172,7 +229,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      *foundp = scope->hasProperty(id);
      JS_UNLOCK_SCOPE(cx, scope);
      return JS_TRUE;
-@@ -3318,136 +3281,133 @@ JS_DefineProperties(JSContext *cx, JSObj
+@@ -3318,136 +3282,133 @@ JS_DefineProperties(JSContext *cx, JSObj
              break;
      }
      return ok;
@@ -340,7 +397,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      return true;
  }
  
-@@ -3520,29 +3480,27 @@ JS_GetOwnPropertyDescriptor(JSContext *c
+@@ -3520,29 +3481,27 @@ JS_GetOwnPropertyDescriptor(JSContext *c
  {
      CHECK_REQUEST(cx);
      return js_GetOwnPropertyDescriptor(cx, obj, id, vp);
@@ -380,7 +437,25 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
 diff --git a/js/src/jsarray.cpp b/js/src/jsarray.cpp
 --- a/js/src/jsarray.cpp
 +++ b/js/src/jsarray.cpp
-@@ -472,26 +472,25 @@ GetArrayElement(JSContext *cx, JSObject 
+@@ -105,16 +105,17 @@
+ #include "jsiter.h"
+ #include "jslock.h"
+ #include "jsnum.h"
+ #include "jsobj.h"
+ #include "jsscope.h"
+ #include "jsstr.h"
+ #include "jsstaticcheck.h"
+ #include "jsvector.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsatominlines.h"
+ #include "jsobjinlines.h"
+ #include "jscntxtinlines.h"
+ 
+ using namespace js;
+ 
+ /* 2^32 - 1 as a number and a string */
+@@ -472,26 +473,25 @@ GetArrayElement(JSContext *cx, JSObject 
      *hole = JS_FALSE;
      if (!IndexToId(cx, obj, index, hole, idr.addr()))
          return JS_FALSE;
@@ -412,7 +487,7 @@ diff --git a/js/src/jsarray.cpp b/js/src/jsarray.cpp
  
  /*
   * Set the value of the property at the given index to v assuming v is rooted.
-@@ -720,35 +719,32 @@ IsDenseArrayId(JSContext *cx, JSObject *
+@@ -720,35 +720,32 @@ IsDenseArrayId(JSContext *cx, JSObject *
      return id == ATOM_TO_JSID(cx->runtime->atomState.lengthAtom) ||
             (js_IdIsIndex(id, &i) &&
              obj->getArrayLength() != 0 &&
@@ -453,7 +528,7 @@ diff --git a/js/src/jsarray.cpp b/js/src/jsarray.cpp
  {
      jsid id = (jsid) prop;
      JS_ASSERT(IsDenseArrayId(cx, obj, id));
-@@ -775,36 +771,36 @@ array_getProperty(JSContext *cx, JSObjec
+@@ -775,36 +772,36 @@ array_getProperty(JSContext *cx, JSObjec
          return JS_TRUE;
      }
  
@@ -501,7 +576,25 @@ diff --git a/js/src/jsarray.cpp b/js/src/jsarray.cpp
 diff --git a/js/src/jsbuiltins.cpp b/js/src/jsbuiltins.cpp
 --- a/js/src/jsbuiltins.cpp
 +++ b/js/src/jsbuiltins.cpp
-@@ -271,23 +271,23 @@ HasProperty(JSContext* cx, JSObject* obj
+@@ -54,16 +54,17 @@
+ #include "jsnum.h"
+ #include "prmjtime.h"
+ #include "jsdate.h"
+ #include "jsscope.h"
+ #include "jsstr.h"
+ #include "jsbuiltins.h"
+ #include "jstracer.h"
+ #include "jsvector.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsatominlines.h"
+ #include "jsobjinlines.h"
+ #include "jsscopeinlines.h"
+ #include "jscntxtinlines.h"
+ 
+ using namespace avmplus;
+ using namespace nanojit;
+@@ -271,23 +272,23 @@ HasProperty(JSContext* cx, JSObject* obj
      for (JSObject* pobj = obj; pobj; pobj = pobj->getProto()) {
          if (pobj->map->ops->lookupProperty != js_LookupProperty)
              return JSVAL_TO_SPECIAL(JSVAL_VOID);
@@ -534,7 +627,25 @@ diff --git a/js/src/jsbuiltins.cpp b/js/src/jsbuiltins.cpp
 diff --git a/js/src/jsdbgapi.cpp b/js/src/jsdbgapi.cpp
 --- a/js/src/jsdbgapi.cpp
 +++ b/js/src/jsdbgapi.cpp
-@@ -781,18 +781,16 @@ js_WrapWatchedSetter(JSContext *cx, jsid
+@@ -57,16 +57,17 @@
+ #include "jslock.h"
+ #include "jsobj.h"
+ #include "jsopcode.h"
+ #include "jsparse.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstaticcheck.h"
+ #include "jsstr.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsatominlines.h"
+ #include "jsobjinlines.h"
+ #include "jsscopeinlines.h"
+ 
+ #include "jsautooplen.h"
+ 
+ using namespace js;
+@@ -781,18 +782,16 @@ js_WrapWatchedSetter(JSContext *cx, jsid
  JS_PUBLIC_API(JSBool)
  JS_SetWatchPoint(JSContext *cx, JSObject *obj, jsval idval,
                   JSWatchPointHandler handler, void *closure)
@@ -553,7 +664,7 @@ diff --git a/js/src/jsdbgapi.cpp b/js/src/jsdbgapi.cpp
  
      origobj = obj;
      obj = obj->wrappedObject(cx);
-@@ -818,32 +816,41 @@ JS_SetWatchPoint(JSContext *cx, JSObject
+@@ -818,32 +817,41 @@ JS_SetWatchPoint(JSContext *cx, JSObject
          return JS_FALSE;
  
      if (!obj->isNative()) {
@@ -600,7 +711,7 @@ diff --git a/js/src/jsdbgapi.cpp b/js/src/jsdbgapi.cpp
  
          if (pobj->isNative()) {
              valroot.set(SPROP_HAS_VALID_SLOT(sprop, pobj->scope())
-@@ -861,22 +868,24 @@ JS_SetWatchPoint(JSContext *cx, JSObject
+@@ -861,22 +869,24 @@ JS_SetWatchPoint(JSContext *cx, JSObject
                  return JS_FALSE;
              }
              getter = setter = NULL;
@@ -633,7 +744,25 @@ diff --git a/js/src/jsdbgapi.cpp b/js/src/jsdbgapi.cpp
 diff --git a/js/src/jsexn.cpp b/js/src/jsexn.cpp
 --- a/js/src/jsexn.cpp
 +++ b/js/src/jsexn.cpp
-@@ -418,34 +418,34 @@ exn_finalize(JSContext *cx, JSObject *ob
+@@ -57,16 +57,17 @@
+ #include "jsfun.h"
+ #include "jsinterp.h"
+ #include "jsnum.h"
+ #include "jsobj.h"
+ #include "jsopcode.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstaticcheck.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsobjinlines.h"
+ 
+ using namespace js;
+ 
+ /* Forward declarations for js_ErrorClass's initializer. */
+ static JSBool
+ Exception(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval);
+@@ -418,34 +419,34 @@ exn_finalize(JSContext *cx, JSObject *ob
  }
  
  static JSBool
@@ -676,7 +805,25 @@ diff --git a/js/src/jsexn.cpp b/js/src/jsexn.cpp
 diff --git a/js/src/jsfun.cpp b/js/src/jsfun.cpp
 --- a/js/src/jsfun.cpp
 +++ b/js/src/jsfun.cpp
-@@ -628,24 +628,20 @@ args_enumerate(JSContext *cx, JSObject *
+@@ -65,16 +65,17 @@
+ #include "jsparse.h"
+ #include "jsscan.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstr.h"
+ #include "jsexn.h"
+ #include "jsstaticcheck.h"
+ #include "jstracer.h"
++#include "jsfoundprop.h"
+ 
+ #if JS_HAS_GENERATORS
+ # include "jsiter.h"
+ #endif
+ 
+ #if JS_HAS_XDR
+ # include "jsxdrapi.h"
+ #endif
+@@ -628,24 +629,20 @@ args_enumerate(JSContext *cx, JSObject *
      int argc = int(obj->getArgsLength());
      for (int i = -2; i != argc; i++) {
          jsid id = (i == -2)
@@ -704,7 +851,7 @@ diff --git a/js/src/jsfun.cpp b/js/src/jsfun.cpp
  /*
   * If a generator's arguments or call object escapes, and the generator frame
   * is not executing, the generator object needs to be marked because it is not
-@@ -947,56 +943,55 @@ static JSBool
+@@ -947,56 +944,55 @@ static JSBool
  call_enumerate(JSContext *cx, JSObject *obj)
  {
      JSFunction *fun;
@@ -771,7 +918,25 @@ diff --git a/js/src/jsfun.cpp b/js/src/jsfun.cpp
 diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
 --- a/js/src/jsinterp.cpp
 +++ b/js/src/jsinterp.cpp
-@@ -860,69 +860,58 @@ js_Execute(JSContext *cx, JSObject *cons
+@@ -69,16 +69,17 @@
+ #include "jsscan.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstr.h"
+ #include "jsstaticcheck.h"
+ #include "jstracer.h"
+ #include "jslibmath.h"
+ #include "jsvector.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsatominlines.h"
+ #include "jscntxtinlines.h"
+ #include "jsdtracef.h"
+ #include "jsobjinlines.h"
+ #include "jspropertycacheinlines.h"
+ #include "jsscopeinlines.h"
+ #include "jsscriptinlines.h"
+@@ -860,69 +861,58 @@ js_Execute(JSContext *cx, JSObject *cons
              hook(cx, fp, JS_FALSE, &ok, hookData);
      }
  
@@ -857,7 +1022,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
      } else {
          /* We allow redeclaring some non-readonly properties. */
          if (((oldAttrs | attrs) & JSPROP_READONLY) == 0) {
-@@ -943,18 +932,17 @@ js_CheckRedeclaration(JSContext *cx, JSO
+@@ -943,18 +933,17 @@ js_CheckRedeclaration(JSContext *cx, JSO
  
              /*
               * Allow redeclaration of an impermanent property (in which case
@@ -877,7 +1042,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
                  return JS_FALSE;
              isFunction = VALUE_IS_FUNCTION(cx, value);
          }
-@@ -2040,28 +2028,28 @@ js_Interpret(JSContext *cx)
+@@ -2040,28 +2029,28 @@ js_Interpret(JSContext *cx)
  
      JSRuntime *rt;
      JSStackFrame *fp;
@@ -933,7 +1098,25 @@ diff --git a/js/src/jsinterp.h b/js/src/jsinterp.h
 diff --git a/js/src/jsiter.cpp b/js/src/jsiter.cpp
 --- a/js/src/jsiter.cpp
 +++ b/js/src/jsiter.cpp
-@@ -695,26 +695,25 @@ js_SuppressDeletedProperty(JSContext *cx
+@@ -65,16 +65,17 @@
+ #include "jsopcode.h"
+ #include "jsproxy.h"
+ #include "jsscan.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstaticcheck.h"
+ #include "jstracer.h"
+ #include "jsvector.h"
++#include "jsfoundprop.h"
+ 
+ #if JS_HAS_XML_SUPPORT
+ #include "jsxml.h"
+ #endif
+ 
+ #include "jscntxtinlines.h"
+ #include "jsobjinlines.h"
+ #include "jsstrinlines.h"
+@@ -695,26 +696,25 @@ js_SuppressDeletedProperty(JSContext *cx
              for (jsid *idp = props_cursor; idp < props_end; ++idp) {
                  if (*idp == id) {
                      /*
@@ -970,7 +1153,25 @@ diff --git a/js/src/jsiter.cpp b/js/src/jsiter.cpp
 diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 --- a/js/src/jsobj.cpp
 +++ b/js/src/jsobj.cpp
-@@ -250,18 +250,16 @@ MarkSharpObjects(JSContext *cx, JSObject
+@@ -73,16 +73,17 @@
+ #include "jsproxy.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstaticcheck.h"
+ #include "jsstdint.h"
+ #include "jsstr.h"
+ #include "jstracer.h"
+ #include "jsdbgapi.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsscopeinlines.h"
+ #include "jsscriptinlines.h"
+ #include "jsobjinlines.h"
+ 
+ #if JS_HAS_GENERATORS
+ #include "jsiter.h"
+ #endif
+@@ -250,18 +251,16 @@ MarkSharpObjects(JSContext *cx, JSObject
      JSHashTable *table;
      JSHashNumber hash;
      JSHashEntry **hep, *he;
@@ -989,7 +1190,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      table = map->table;
      hash = js_hash_object(obj);
      hep = JS_HashTableRawLookup(table, hash, obj);
-@@ -275,34 +273,36 @@ MarkSharpObjects(JSContext *cx, JSObject
+@@ -275,34 +274,36 @@ MarkSharpObjects(JSContext *cx, JSObject
          }
  
          ida = JS_Enumerate(cx, obj);
@@ -1032,7 +1233,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                  if (hasGetter && !JSVAL_IS_PRIMITIVE(v.value())) {
                      ok = !!MarkSharpObjects(cx, JSVAL_TO_OBJECT(v.value()), NULL);
                      if (!ok)
-@@ -528,18 +528,16 @@ obj_toSource(JSContext *cx, uintN argc, 
+@@ -528,18 +529,16 @@ obj_toSource(JSContext *cx, uintN argc, 
      JSBool ok, outermost;
      JSObject *obj;
      JSHashEntry *he;
@@ -1051,7 +1252,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      jsval localroot[4] = {JSVAL_NULL, JSVAL_NULL, JSVAL_NULL, JSVAL_NULL};
      AutoArrayRooter tvr(cx, JS_ARRAY_LENGTH(localroot), localroot);
-@@ -609,51 +607,56 @@ obj_toSource(JSContext *cx, uintN argc, 
+@@ -609,51 +608,56 @@ obj_toSource(JSContext *cx, uintN argc, 
       * the raw (unconverted, "uncooked") values.
       */
      val = localroot + 2;
@@ -1114,7 +1315,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                  if (!ok)
                      goto error;
              }
-@@ -1486,87 +1489,85 @@ JSBool
+@@ -1486,87 +1490,85 @@ JSBool
  js_HasOwnPropertyHelper(JSContext *cx, JSLookupPropOp lookup, uintN argc,
                          jsval *vp)
  {
@@ -1217,7 +1418,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  static JSBool
  obj_isPrototypeOf(JSContext *cx, uintN argc, jsval *vp)
  {
-@@ -1592,22 +1593,21 @@ obj_propertyIsEnumerable(JSContext *cx, 
+@@ -1592,22 +1594,21 @@ obj_propertyIsEnumerable(JSContext *cx, 
  
      obj = JS_THIS_OBJECT(cx, vp);
      return obj && js_PropertyIsEnumerable(cx, obj, id, vp);
@@ -1243,7 +1444,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
       * XXX ECMA spec error compatible: return false unless hasOwnProperty.
       * The ECMA spec really should be fixed so propertyIsEnumerable and the
       * for..in loop agree on whether prototype properties are enumerable,
-@@ -1615,27 +1615,29 @@ js_PropertyIsEnumerable(JSContext *cx, J
+@@ -1615,27 +1616,29 @@ js_PropertyIsEnumerable(JSContext *cx, J
       *
       * We check here for shared permanent prototype properties, which should
       * be treated as if they are local to obj.  They are an implementation
@@ -1278,7 +1479,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  }
  
  #if OLD_GETTER_SETTER_METHODS
-@@ -1659,17 +1661,17 @@ js_obj_defineGetter(JSContext *cx, uintN
+@@ -1659,17 +1662,17 @@ js_obj_defineGetter(JSContext *cx, uintN
                               js_getter_str);
          return JS_FALSE;
      }
@@ -1297,7 +1498,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      if (!obj->checkAccess(cx, id, JSACC_WATCH, &junk, &attrs))
          return JS_FALSE;
      *vp = JSVAL_VOID;
-@@ -1692,17 +1694,17 @@ js_obj_defineSetter(JSContext *cx, uintN
+@@ -1692,17 +1695,17 @@ js_obj_defineSetter(JSContext *cx, uintN
                               js_setter_str);
          return JS_FALSE;
      }
@@ -1316,7 +1517,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      if (!obj->checkAccess(cx, id, JSACC_WATCH, &junk, &attrs))
          return JS_FALSE;
      *vp = JSVAL_VOID;
-@@ -1710,58 +1712,60 @@ js_obj_defineSetter(JSContext *cx, uintN
+@@ -1710,58 +1713,60 @@ js_obj_defineSetter(JSContext *cx, uintN
                                 JS_PropertyStub, CastAsPropertyOp(JSVAL_TO_OBJECT(fval)),
                                 JSPROP_ENUMERATE | JSPROP_SETTER | JSPROP_SHARED);
  }
@@ -1391,7 +1592,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  JSBool
  obj_getPrototypeOf(JSContext *cx, uintN argc, jsval *vp)
  {
-@@ -1826,41 +1830,42 @@ js_NewPropertyDescriptorObject(JSContext
+@@ -1826,41 +1831,42 @@ js_NewPropertyDescriptorObject(JSContext
  JSBool
  js_GetOwnPropertyDescriptor(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
  {
@@ -1442,7 +1643,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      return js_NewPropertyDescriptorObject(cx, id,
                                            attrs,
-@@ -2083,39 +2088,38 @@ Reject(JSContext *cx, uintN errorNumber,
+@@ -2083,39 +2089,38 @@ Reject(JSContext *cx, uintN errorNumber,
          return JS_FALSE;
      }
  
@@ -1487,7 +1688,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
          if (desc.isGenericDescriptor() || desc.isDataDescriptor()) {
              JS_ASSERT(obj->map->ops->defineProperty == js_DefineProperty);
              return js_DefineProperty(cx, obj, desc.id, desc.value,
-@@ -2144,19 +2148,20 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2144,19 +2149,20 @@ DefinePropertyOnObject(JSContext *cx, JS
      /*
       * In the special case of shared permanent properties, the "own" property
       * can be found on a different object.  In that case the returned property
@@ -1511,7 +1712,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
              if (desc.hasGet &&
                  !js_SameValue(desc.getterValue(),
                                sprop->hasGetterValue() ? sprop->getterValue() : JSVAL_VOID,
-@@ -2199,21 +2204,22 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2199,21 +2205,22 @@ DefinePropertyOnObject(JSContext *cx, JS
                   * &c.).  Longer-term perhaps we should convert such properties
                   * to use data descriptors (at which point representing a
                   * descriptor with native getter/setter as an accessor
@@ -1536,7 +1737,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
              if (desc.isDataDescriptor()) {
                  if (!sprop->isDataDescriptor())
                      break;
-@@ -2229,70 +2235,70 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2229,70 +2236,70 @@ DefinePropertyOnObject(JSContext *cx, JS
          }
  
          if (desc.hasConfigurable && desc.configurable() != sprop->configurable())
@@ -1612,7 +1813,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      /* 8.12.9 step 12. */
      uintN attrs;
      JSPropertyOp getter, setter;
-@@ -2327,20 +2333,20 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2327,20 +2334,20 @@ DefinePropertyOnObject(JSContext *cx, JS
      } else {
          JS_ASSERT(desc.isAccessorDescriptor());
  
@@ -1637,7 +1838,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
              changed |= JSPROP_PERMANENT;
          if (desc.hasEnumerable)
              changed |= JSPROP_ENUMERATE;
-@@ -2363,17 +2369,17 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2363,17 +2370,17 @@ DefinePropertyOnObject(JSContext *cx, JS
          } else {
              setter = (sprop->hasDefaultSetter() && !sprop->hasSetterValue())
                       ? JS_PropertyStub
@@ -1656,7 +1857,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                        bool throwError, bool *rval)
  {
      /*
-@@ -2895,26 +2901,26 @@ js_InferFlags(JSContext *cx, uintN defau
+@@ -2895,26 +2902,26 @@ js_InferFlags(JSContext *cx, uintN defau
          flags |= JSRESOLVE_DECLARING;
      return flags;
  }
@@ -1686,7 +1887,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      return obj->getProto()->getProperty(cx, id, vp);
  }
  
-@@ -3781,20 +3787,18 @@ js_SetClassObject(JSContext *cx, JSObjec
+@@ -3781,20 +3788,18 @@ js_SetClassObject(JSContext *cx, JSObjec
             js_SetReservedSlot(cx, obj, JSProto_LIMIT + key, OBJECT_TO_JSVAL(proto));
  }
  
@@ -1708,7 +1909,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
       * cx->fp.
       */
      VOUCH_DOES_NOT_REQUIRE_STACK();
-@@ -3832,31 +3836,36 @@ js_FindClassObject(JSContext *cx, JSObje
+@@ -3832,31 +3837,36 @@ js_FindClassObject(JSContext *cx, JSObje
      } else {
          JSAtom *atom = js_Atomize(cx, clasp->name, strlen(clasp->name), 0);
          if (!atom)
@@ -1756,7 +1957,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                     JSObject *parent, uintN argc, jsval *argv)
  {
      jsval cval, rval;
-@@ -4155,17 +4164,17 @@ AddPropertyHelper(JSContext *cx, JSClass
+@@ -4155,17 +4165,17 @@ AddPropertyHelper(JSContext *cx, JSClass
          }
      }
      return true;
@@ -1775,7 +1976,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      JSBool added;
  
      JS_ASSERT((defineHow & ~(JSDNP_CACHE_RESULT | JSDNP_DONT_PURGE | JSDNP_SET_METHOD)) == 0);
-@@ -4176,46 +4185,49 @@ js_DefineNativeProperty(JSContext *cx, J
+@@ -4176,46 +4186,49 @@ js_DefineNativeProperty(JSContext *cx, J
  
      /*
       * If defining a getter or setter, we must check for its counterpart and
@@ -1833,7 +2034,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
       * Purge the property cache of any properties named by id that are about
       * to be shadowed in obj's scope chain unless it is known a priori that it
       * is not possible. We do this before locking obj to avoid nesting locks.
-@@ -4292,33 +4304,32 @@ js_DefineNativeProperty(JSContext *cx, J
+@@ -4292,33 +4305,32 @@ js_DefineNativeProperty(JSContext *cx, J
      }
  
      if (defineHow & JSDNP_CACHE_RESULT) {
@@ -1871,7 +2072,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  /*
   * Call obj's resolve hook. obj is a native object and the caller holds its
   * scope lock.
-@@ -4333,22 +4344,26 @@ js_LookupProperty(JSContext *cx, JSObjec
+@@ -4333,22 +4345,26 @@ js_LookupProperty(JSContext *cx, JSObjec
   *
   *   - If we are alrady resolving a property of *curobjp, set *recursedp = true,
   *     unlock obj, and return true.
@@ -1899,7 +2100,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      /*
       * Avoid recursion on (obj, id) already being resolved on cx.
       *
-@@ -4367,18 +4382,16 @@ CallResolveOp(JSContext *cx, JSObject *s
+@@ -4367,18 +4383,16 @@ CallResolveOp(JSContext *cx, JSObject *s
          /* Already resolving id in obj -- suppress recursion. */
          JS_UNLOCK_OBJ(cx, obj);
          *recursedp = true;
@@ -1918,7 +2119,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
              flags = js_InferFlags(cx, flags);
          JSObject *obj2 = (clasp->flags & JSCLASS_NEW_RESOLVE_GETS_START) ? start : NULL;
          JS_UNLOCK_OBJ(cx, obj);
-@@ -4397,18 +4410,18 @@ CallResolveOp(JSContext *cx, JSObject *s
+@@ -4397,18 +4411,18 @@ CallResolveOp(JSContext *cx, JSObject *s
              if (obj2 != obj) {
                  JS_UNLOCK_OBJ(cx, obj);
                  if (obj2->isNative())
@@ -1939,7 +2140,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                   * do for old-style resolve.  If it doesn't, then
                   * id was not truly resolved, and we'll find it in
                   * the proto chain, or miss it if obj2's proto is
-@@ -4443,244 +4456,292 @@ CallResolveOp(JSContext *cx, JSObject *s
+@@ -4443,244 +4457,236 @@ CallResolveOp(JSContext *cx, JSObject *s
          scope = obj->scope();
          if (!scope->isSharedEmpty())
              sprop = scope->lookup(id);
@@ -1956,62 +2157,6 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      return ok;
  }
  
-+JSBool
-+JSFoundProperty::value(JSContext *cx, jsval *vp, JSBool strict) const
-+{
-+    return JS_FALSE; // TODO
-+#if 0
-+    if (!wasFound()) {
-+        if (strict) {
-+            JS_ReportError(cx, "");
-+            return JS_FALSE;
-+        }
-+        *vp = JVAL_VOID;
-+        return JS_TRUE;
-+    }
-+
-+    if (isVirtual()) {
-+        *vp = JSVAL_VOID; // TODO
-+        return JS_TRUE;
-+    }
-+
-+    if (isNative()) {
-+        JSScopeProperty *sprop = (JSScopeProperty *) mProp;
-+
-+        if (sprop->isMethod()) {
-+            AutoScopePropertyRooter root(cx, sprop);
-+            JS_UNLOCK_OBJ(cx, obj2);
-+            *vp = sprop->methodValue();
-+            return obj2->scope()->methodReadBarrier(cx, sprop, vp);
-+        }
-+
-+        /* Peek at the native property's slot value, without doing a Get. */
-+        *vp = SPROP_HAS_VALID_SLOT(sprop, obj2->scope())
-+               ? obj2->lockedGetSlot(sprop->slot)
-+               : JSVAL_TRUE;
-+        JS_UNLOCK_OBJ(cx, obj2);
-+    } else if (obj2->isDenseArray()) {
-+        return js_GetDenseArrayElementValue(cx, obj2, prop, vp);
-+    } else {
-+        /* XXX bad API: no way to return "defined but value unknown" */
-+        *vp = JSVAL_TRUE;
-+    }
-+    return true;
-+#endif
-+}
-+
-+JSBool
-+JSFoundProperty::descriptor(JSContext *cx, uintN flags,
-+                            JSPropertyDescriptor *desc) const
-+{
-+    desc->obj = mWhere;
-+    desc->getter = NULL; // TODO
-+    desc->setter = NULL; // TODO
-+    desc->shortid = 0; // XXX Is this acceptable?
-+    return (js_GetAttributes(cx, mWhere, mId, &desc->attrs) &&
-+            value(cx, &desc->value));
-+}
-+
  int
  js_LookupPropertyWithFlags(JSContext *cx, JSObject *obj, jsid id, uintN flags,
 -                           JSObject **objp, JSProperty **propp)
@@ -2286,7 +2431,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
           * chain during JSObject::lookupProperty. So we must check if parent is
           * not null here even if it wasn't before the lookup.
           */
-@@ -4802,32 +4863,32 @@ js_NativeSet(JSContext *cx, JSObject *ob
+@@ -4802,32 +4808,32 @@ js_NativeSet(JSContext *cx, JSObject *ob
  
      return true;
  }
@@ -2324,7 +2469,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
          PCMETER(getHow & JSGET_CACHE_RESULT && JS_PROPERTY_CACHE(cx).nofills++);
  
          /*
-@@ -4878,30 +4939,35 @@ js_GetPropertyHelper(JSContext *cx, JSOb
+@@ -4878,30 +4884,35 @@ js_GetPropertyHelper(JSContext *cx, JSOb
                                            JSDVG_IGNORE_STACK, ID_TO_VALUE(id),
                                            NULL, NULL, NULL)) {
                  return JS_FALSE;
@@ -2369,7 +2514,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  {
      return js_GetPropertyHelper(cx, obj, id, JSGET_METHOD_BARRIER, vp);
  }
-@@ -4962,18 +5028,17 @@ ReportReadOnly(JSContext* cx, jsid id, u
+@@ -4962,18 +4973,17 @@ ReportReadOnly(JSContext* cx, jsid id, u
   * SetPropHit when called from the interpreter, which is detected by testing
   * (defineHow & JSDNP_CACHE_RESULT).
   */
@@ -2389,7 +2534,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      JSPropertyOp getter, setter;
      bool added;
  
-@@ -4987,57 +5052,59 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -4987,57 +4997,59 @@ js_SetPropertyHelper(JSContext *cx, JSOb
  
      /*
       * We peek at obj->scope() without locking obj. Any race means a failure
@@ -2463,7 +2608,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                  if (defineHow & JSDNP_CACHE_RESULT)
                      TRACE_2(SetPropHit, JS_NO_PROP_CACHE_FILL, sprop);
                  return js_ReportGetterOnlyAssignment(cx);
-@@ -5066,32 +5133,33 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -5066,32 +5078,33 @@ js_SetPropertyHelper(JSContext *cx, JSOb
              }
          }
          if (scope->sealed() && !sprop->hasSlot()) {
@@ -2499,7 +2644,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
                  return sprop->set(cx, obj, vp);
              }
-@@ -5198,29 +5266,29 @@ JSBool
+@@ -5198,29 +5211,29 @@ JSBool
  js_SetProperty(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
  {
      return js_SetPropertyHelper(cx, obj, id, 0, vp);
@@ -2538,7 +2683,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                         uintN attrs)
  {
      JS_ASSERT(obj->isNative());
-@@ -5228,69 +5296,77 @@ js_SetNativeAttributes(JSContext *cx, JS
+@@ -5228,69 +5241,77 @@ js_SetNativeAttributes(JSContext *cx, JS
                                           sprop->getter(), sprop->setter());
      JS_UNLOCK_OBJ(cx, obj);
      return (sprop != NULL);
@@ -2632,7 +2777,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      /* XXXbe called with obj locked */
      if (!obj->getClass()->delProperty(cx, obj, SPROP_USERID(sprop), rval)) {
-@@ -5427,17 +5503,16 @@ js_Enumerate(JSContext *cx, JSObject *ob
+@@ -5427,17 +5448,16 @@ js_Enumerate(JSContext *cx, JSObject *ob
  }
  
  JSBool
@@ -2650,7 +2795,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      writing = (mode & JSACC_WRITE) != 0;
      switch (mode & JSACC_TYPEMASK) {
        case JSACC_PROTO:
-@@ -5449,48 +5524,56 @@ js_CheckAccess(JSContext *cx, JSObject *
+@@ -5449,48 +5469,56 @@ js_CheckAccess(JSContext *cx, JSObject *
  
        case JSACC_PARENT:
          JS_ASSERT(!writing);
@@ -2757,7 +2902,7 @@ diff --git a/js/src/jsobj.h b/js/src/jsobj.h
  js_PropertyIsEnumerable(JSContext *cx, JSObject *obj, jsid id, jsval *vp);
  
  #ifdef OLD_GETTER_SETTER_METHODS
-@@ -1050,39 +1049,92 @@ const uintN JSDNP_UNQUALIFIED  = 8; /* U
+@@ -1050,39 +1049,38 @@ const uintN JSDNP_UNQUALIFIED  = 8; /* U
   * obj locked and with a held property in *propp; if propp is null, return true
   * but release obj's lock first.  Therefore all callers who pass non-null propp
   * result parameters must later call obj->dropProperty(cx, *propp) both to drop
@@ -2770,60 +2915,6 @@ diff --git a/js/src/jsobj.h b/js/src/jsobj.h
 +                        uintN flags, intN shortid, JSFoundProperty *found,
                          uintN defineHow = 0);
  
-+class JSFoundProperty {
-+    const jsid mId;
-+    JSObject *mWhere;
-+    JSProperty *mProp;
-+
-+    bool isNative() const { return wasFound() && mWhere->isNative(); }
-+
-+public:
-+
-+    JSFoundProperty(jsid id)
-+        : mId(id)
-+        , mWhere(NULL)
-+        , mProp(NULL)
-+    {}
-+
-+    /* Can't have a destructor because it might be skipped by goto. */
-+
-+    void set(JSObject *where = NULL,
-+             JSProperty *prop = NULL)
-+    {
-+        JS_ASSERT(!prop || where);
-+        mWhere = where;
-+        mProp = prop;
-+    }
-+
-+    JSFoundProperty &operator=(const JSFoundProperty &other) {
-+        if (this != &other) {
-+            JS_ASSERT(mId == other.mId);
-+            mWhere = other.mWhere;
-+            mProp = other.mProp;
-+        }
-+        return *this;
-+    }
-+
-+    bool wasFound() const { return !!mWhere; }
-+    bool isVirtual() const { return isNative() && !mProp; }
-+
-+    jsid id() const { return mId; }
-+    JSObject *where() const { JS_ASSERT(wasFound()); return mWhere; }
-+    JSScopeProperty *sprop() const { JS_ASSERT(mProp); return (JSScopeProperty *) mProp; }
-+
-+    // TODO Deprecate this in favor of mWhere->getProperty
-+    JSBool value(JSContext *cx, jsval *vp, JSBool strict = JS_FALSE) const;
-+    JSBool descriptor(JSContext *cx, uintN flags,
-+                      JSPropertyDescriptor *desc) const;
-+
-+    void drop(JSContext *cx) {
-+        if (wasFound() && mProp) {
-+            mWhere->dropProperty(cx, mProp);
-+            mProp = NULL; // XXX
-+        }
-+    }
-+};
-+
  /*
   * Unlike js_DefineNativeProperty, propp must be non-null. On success, and if
   * id was found, return true with *objp non-null and locked, and with a held
@@ -2855,7 +2946,7 @@ diff --git a/js/src/jsobj.h b/js/src/jsobj.h
   */
  static inline bool
  js_IsCacheableNonGlobalScope(JSObject *obj)
-@@ -1100,25 +1152,24 @@ js_IsCacheableNonGlobalScope(JSObject *o
+@@ -1100,25 +1098,24 @@ js_IsCacheableNonGlobalScope(JSObject *o
      return cacheable;
  }
  
@@ -3864,7 +3955,25 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
 diff --git a/js/src/jsproxy.cpp b/js/src/jsproxy.cpp
 --- a/js/src/jsproxy.cpp
 +++ b/js/src/jsproxy.cpp
-@@ -771,30 +771,30 @@ GetProxyObjectClass(JSContext *cx, JSObj
+@@ -42,16 +42,17 @@
+ #include <string.h>
+ #include "jsapi.h"
+ #include "jscntxt.h"
+ #include "jsprvtd.h"
+ #include "jsnum.h"
+ #include "jsobj.h"
+ #include "jsproxy.h"
+ #include "jsscope.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsobjinlines.h"
+ 
+ using namespace js;
+ 
+ namespace js {
+ 
+ static bool
+@@ -771,30 +772,30 @@ GetProxyObjectClass(JSContext *cx, JSObj
          return true;
      }
      JS_ASSERT(JSVAL_IS_STRING(nameval));
@@ -3909,25 +4018,40 @@ diff --git a/js/src/jsproxy.cpp b/js/src/jsproxy.cpp
 diff --git a/js/src/jsprvtd.h b/js/src/jsprvtd.h
 --- a/js/src/jsprvtd.h
 +++ b/js/src/jsprvtd.h
-@@ -105,16 +105,17 @@ struct Compiler;
- typedef struct JSArgumentFormatMap  JSArgumentFormatMap;
- typedef struct JSCodeGenerator      JSCodeGenerator;
- typedef union JSGCThing             JSGCThing;
- typedef struct JSGenerator          JSGenerator;
- typedef struct JSNativeEnumerator   JSNativeEnumerator;
- typedef struct JSFunctionBox        JSFunctionBox;
- typedef struct JSObjectBox          JSObjectBox;
- typedef struct JSParseNode          JSParseNode;
-+typedef class JSFoundProperty       JSFoundProperty;
- typedef struct JSProperty           JSProperty;
- typedef struct JSSharpObjectMap     JSSharpObjectMap;
- typedef struct JSEmptyScope         JSEmptyScope;
- typedef struct JSThread             JSThread;
- typedef struct JSThreadData         JSThreadData;
- typedef struct JSTreeContext        JSTreeContext;
- typedef struct JSTryNote            JSTryNote;
- typedef struct JSWeakRoots          JSWeakRoots;
-@@ -328,18 +329,18 @@ typedef struct JSDebugHooks {
+@@ -193,23 +193,31 @@ class PropertyCache;
+ struct PropertyCacheEntry;
+ 
+ static inline JSPropertyOp
+ CastAsPropertyOp(JSObject *object)
+ {
+     return JS_DATA_TO_FUNC_PTR(JSPropertyOp, object);
+ }
+ 
++class FoundProperty;
++
+ } /* namespace js */
+ 
+ /* Common instantiations. */
+ typedef js::Vector<jschar, 32> JSCharBuffer;
++typedef js::FoundProperty JSFoundProperty;
+ 
+ } /* export "C++" */
+-#endif  /* __cplusplus */
++#else  /* __cplusplus */
++
++/* JSFoundProperty won't be used from C. */
++typedef void JSFoundProperty;
++
++#endif
+ 
+ /* "Friend" types used by jscntxt.h and jsdbgapi.h. */
+ typedef enum JSTrapStatus {
+     JSTRAP_ERROR,
+     JSTRAP_CONTINUE,
+     JSTRAP_RETURN,
+     JSTRAP_THROW,
+     JSTRAP_LIMIT
+@@ -328,18 +336,18 @@ typedef struct JSDebugHooks {
   * successful lookup must be dropped via JSObject::dropProperty.
   *
   * NB: successful return with non-null *propp means the implementation may
@@ -3951,7 +4075,25 @@ diff --git a/js/src/jsprvtd.h b/js/src/jsprvtd.h
 diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
 --- a/js/src/jstracer.cpp
 +++ b/js/src/jstracer.cpp
-@@ -7852,29 +7852,32 @@ JS_REQUIRES_STACK AbortableRecordingStat
+@@ -71,16 +71,17 @@
+ #include "jsopcode.h"
+ #include "jsregexp.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstaticcheck.h"
+ #include "jstracer.h"
+ #include "jsxml.h"
+ #include "jstypedarray.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsatominlines.h"
+ #include "jscntxtinlines.h"
+ #include "jspropertycacheinlines.h"
+ #include "jsobjinlines.h"
+ #include "jsscopeinlines.h"
+ #include "jsscriptinlines.h"
+ 
+@@ -7852,29 +7853,32 @@ JS_REQUIRES_STACK AbortableRecordingStat
  TraceRecorder::scopeChainProp(JSObject* chainHead, jsval*& vp, LIns*& ins, NameResult& nr)
  {
      JS_ASSERT(chainHead == cx->fp->scopeChain);
@@ -3988,7 +4130,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
          if (cx->fp->argv) {
              // Skip any Call object when inside a function. Any reference to a
              // Call name the compiler resolves statically and we do not need
-@@ -7882,45 +7885,46 @@ TraceRecorder::scopeChainProp(JSObject* 
+@@ -7882,45 +7886,46 @@ TraceRecorder::scopeChainProp(JSObject* 
              chainHead = cx->fp->calleeObject()->getParent();
              head_ins = stobj_get_parent(get(&cx->fp->argv[-2]));
          } else {
@@ -4044,7 +4186,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
   */
  JS_REQUIRES_STACK RecordingStatus
  TraceRecorder::callProp(JSObject* obj, JSProperty* prop, jsid id, jsval*& vp,
-@@ -9193,72 +9197,74 @@ TraceRecorder::test_property_cache(JSObj
+@@ -9193,72 +9198,74 @@ TraceRecorder::test_property_cache(JSObj
          RETURN_STOP_A("non-native object");
  
      JSAtom* atom;
@@ -4132,7 +4274,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
      // There's a potential race in any JS_THREADSAFE embedding that's nuts
      // enough to share mutable objects on the scope or proto chain, but we
      // don't care about such insane embeddings. Anyway, the (scope, proto)
-@@ -11843,21 +11849,20 @@ TraceRecorder::getPropertyById(LIns* obj
+@@ -11843,21 +11850,20 @@ TraceRecorder::getPropertyById(LIns* obj
  
  /* Manually inlined, specialized copy of js_NativeGet. */
  static JSBool FASTCALL
@@ -4158,7 +4300,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
      JS_ASSERT(obj->getClass() != &js_WithClass);
  
      *vp = JSVAL_VOID;
-@@ -14137,33 +14142,30 @@ TraceRecorder::record_JSOP_IN()
+@@ -14137,33 +14143,30 @@ TraceRecorder::record_JSOP_IN()
      }
  
      guard(false, lir->ins2ImmI(LIR_eqi, x, JSVAL_TO_SPECIAL(JSVAL_VOID)), OOM_EXIT);
@@ -4200,7 +4342,25 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
 diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
 --- a/js/src/jstypedarray.cpp
 +++ b/js/src/jstypedarray.cpp
-@@ -289,35 +289,33 @@ getLength(TypedArray *tarray)
+@@ -57,16 +57,17 @@
+ #include "jsinterp.h"
+ #include "jslock.h"
+ #include "jsnum.h"
+ #include "jsobj.h"
+ #include "jsstaticcheck.h"
+ #include "jsbit.h"
+ #include "jsvector.h"
+ #include "jstypedarray.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsobjinlines.h"
+ 
+ using namespace js;
+ 
+ /*
+  * ArrayBuffer
+  *
+@@ -289,35 +290,33 @@ getLength(TypedArray *tarray)
  JSBool
  TypedArray::prop_getLength(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
  {
@@ -4240,7 +4400,7 @@ diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
      TypedArray *tarray = fromJSObject(obj);
      JS_ASSERT(tarray);
  
-@@ -525,36 +523,39 @@ class TypedArrayTemplate
+@@ -525,36 +524,39 @@ class TypedArrayTemplate
              return true;
          }
  
@@ -4291,7 +4451,27 @@ diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
 diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
 --- a/js/src/jstypedarray.h
 +++ b/js/src/jstypedarray.h
-@@ -127,17 +127,17 @@ struct JS_FRIEND_API(TypedArray) {
+@@ -90,16 +90,19 @@ struct JS_FRIEND_API(ArrayBuffer) {
+ /*
+  * TypedArray
+  *
+  * The non-templated base class for the specific typed implementations.
+  * This class holds all the member variables that are used by
+  * the subclasses.
+  */
+ 
++/* typedef'd to JSFoundProperty in jsprvtd.h. */
++class FoundProperty;
++
+ struct JS_FRIEND_API(TypedArray) {
+     enum {
+         TYPE_INT8 = 0,
+         TYPE_UINT8,
+         TYPE_INT16,
+         TYPE_UINT16,
+         TYPE_INT32,
+         TYPE_UINT32,
+@@ -127,17 +130,17 @@ struct JS_FRIEND_API(TypedArray) {
      static TypedArray *fromJSObject(JSObject *obj);
  
      static JSBool prop_getBuffer(JSContext *cx, JSObject *obj, jsval id, jsval *vp);
@@ -4301,7 +4481,7 @@ diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
  
      static JSBool obj_lookupProperty(JSContext *cx, JSObject *obj, jsid id,
 -                                     JSObject **objp, JSProperty **propp);
-+                                     JSFoundProperty *found);
++                                     FoundProperty *found);
  
      static void obj_trace(JSTracer *trc, JSObject *obj);
  
@@ -4313,7 +4493,25 @@ diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
 diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
 --- a/js/src/jsxml.cpp
 +++ b/js/src/jsxml.cpp
-@@ -4500,46 +4500,44 @@ HasIndexedProperty(JSXML *xml, uint32 i)
+@@ -64,16 +64,17 @@
+ #include "jsparse.h"
+ #include "jsscan.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstr.h"
+ #include "jsxml.h"
+ #include "jsstaticcheck.h"
+ #include "jsvector.h"
++#include "jsfoundprop.h"
+ 
+ #include "jscntxtinlines.h"
+ #include "jsobjinlines.h"
+ 
+ #ifdef DEBUG
+ #include <string.h>     /* for #ifdef DEBUG memset calls */
+ #endif
+ 
+@@ -4500,46 +4501,44 @@ HasIndexedProperty(JSXML *xml, uint32 i)
  }
  
  static JSBool
@@ -4369,7 +4567,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
  HasProperty(JSContext *cx, JSObject *obj, jsval id, JSBool *found)
  {
      JSXML *xml;
-@@ -4609,18 +4607,18 @@ xml_trace_vector(JSTracer *trc, JSXML **
+@@ -4609,18 +4608,18 @@ xml_trace_vector(JSTracer *trc, JSXML **
   * We partially workaround the problem in GetXMLFunction. There we take
   * advantage of the fact that typically function:: is used to access the
   * functions from XML.prototype. So when js_GetProperty returns a non-function
@@ -4390,7 +4588,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
      JSObject *qn;
      jsid funid;
      JSScopeProperty *sprop;
-@@ -4629,32 +4627,30 @@ xml_lookupProperty(JSContext *cx, JSObje
+@@ -4629,32 +4628,30 @@ xml_lookupProperty(JSContext *cx, JSObje
      xml = (JSXML *) obj->getPrivate();
      if (js_IdIsIndex(v, &i)) {
          found = HasIndexedProperty(xml, i);
@@ -4426,7 +4624,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
  xml_defineProperty(JSContext *cx, JSObject *obj, jsid id, jsval value,
                     JSPropertyOp getter, JSPropertyOp setter, uintN attrs)
  {
-@@ -7003,20 +6999,19 @@ js_InitAnyNameClass(JSContext *cx, JSObj
+@@ -7003,20 +7000,19 @@ js_InitAnyNameClass(JSContext *cx, JSObj
      if (!js_GetAnyName(cx, &v))
          return NULL;
      return JSVAL_TO_OBJECT(v);
@@ -4448,7 +4646,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
          return NULL;
  
      /* Define the XML class constructor and prototype. */
-@@ -7034,26 +7029,25 @@ js_InitXMLClass(JSContext *cx, JSObject 
+@@ -7034,26 +7030,25 @@ js_InitXMLClass(JSContext *cx, JSObject 
      METER(xml_stats.xmlobj);
  
      /*
@@ -4483,7 +4681,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
      vp[2] = JSVAL_VOID;
      if (!xml_setSettings(cx, 1, vp))
          return NULL;
-@@ -7368,20 +7362,19 @@ js_GetAnyName(JSContext *cx, jsval *vp)
+@@ -7368,20 +7363,19 @@ js_GetAnyName(JSContext *cx, jsval *vp)
  
  JSBool
  js_FindXMLProperty(JSContext *cx, jsval nameval, JSObject **objp, jsid *idp)
@@ -4505,7 +4703,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
          v = STRING_TO_JSVAL(ATOM_TO_STRING(cx->runtime->atomState.starAtom));
          nameobj = js_ConstructObject(cx, &js_QNameClass.base, NULL, NULL, 1,
                                       &v);
-@@ -7416,20 +7409,21 @@ js_FindXMLProperty(JSContext *cx, jsval 
+@@ -7416,20 +7410,21 @@ js_FindXMLProperty(JSContext *cx, jsval 
                      return JS_FALSE;
              }
              if (found) {
@@ -4533,7 +4731,25 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
 diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -2011,18 +2011,16 @@ DumpScope(JSContext *cx, JSObject *obj, 
+@@ -68,16 +68,17 @@
+ #include "jslock.h"
+ #include "jsnum.h"
+ #include "jsobj.h"
+ #include "jsparse.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jstracer.h"
+ #include "jsxml.h"
++#include "jsfoundprop.h"
+ 
+ #include "prmjtime.h"
+ 
+ #ifdef JSDEBUGGER
+ #include "jsdebug.h"
+ #ifdef JSDEBUGGER_JAVA_UI
+ #include "jsdjava.h"
+ #endif /* JSDEBUGGER_JAVA_UI */
+@@ -2011,18 +2012,16 @@ DumpScope(JSContext *cx, JSObject *obj, 
  
  static JSBool
  DumpStats(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
@@ -4552,7 +4768,7 @@ diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
              return JS_FALSE;
          argv[i] = STRING_TO_JSVAL(str);
          bytes = JS_GetStringBytes(str);
-@@ -2032,24 +2030,26 @@ DumpStats(JSContext *cx, JSObject *obj, 
+@@ -2032,24 +2031,26 @@ DumpStats(JSContext *cx, JSObject *obj, 
  #endif
          } else if (strcmp(bytes, "atom") == 0) {
              js_DumpAtoms(cx, gOutFile);
@@ -4583,7 +4799,7 @@ diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
              if (obj)
                  DumpScope(cx, obj, stdout);
          }
-@@ -2669,25 +2669,25 @@ split_resolve(JSContext *cx, JSObject *o
+@@ -2669,25 +2670,25 @@ split_resolve(JSContext *cx, JSObject *o
                                   JSPROP_SHARED);
      }
  
