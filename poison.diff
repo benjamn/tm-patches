@@ -832,7 +832,7 @@ diff --git a/js/src/jsfoundprop.cpp b/js/src/jsfoundprop.cpp
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.cpp
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,126 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -878,34 +878,35 @@ new file mode 100644
 +using js::FoundProperty;
 +
 +JSBool
-+FoundProperty::value(JSContext *cx, jsval *vp, JSBool strict) const
++FoundProperty::value(JSContext *cx, jsval *vp, uintN getHow) const
 +{
 +    if (!wasFound()) {
-+        if (strict) {
-+            JS_ReportError(cx, "No value found for property");
-+            return JS_FALSE;
-+        }
 +        *vp = JSVAL_VOID;
 +        return JS_TRUE;
 +    }
 +
-+    if (isVirtual())
++    if (mWhere->isDenseArray())
++        return js_GetDenseArrayElementValue(cx, mWhere, mProp, vp);
++
++    if (!mWhere->isNative())
 +        return mWhere->getProperty(cx, mId, vp);
 +
-+    if (isNative()) {
++    if (isVirtual())
++        // TODO Change this call to getVirtualProperty if need be.
++        return mWhere->getClass()->getProperty(cx, mWhere, mId, vp);
++
++    if (inScope()) {
 +        JS_ASSERT(JSVAL_IS_OBJECT(*vp));
 +        JSObject *obj = JSVAL_TO_OBJECT(*vp);
 +        JS_ASSERT(obj);
-+        if (!js_NativeGet(cx, obj, mWhere, sprop(), JSGET_METHOD_BARRIER, vp))
++        if (!js_NativeGet(cx, obj, mWhere, sprop(), getHow, vp))
 +            return JS_FALSE;
 +        JS_UNLOCK_OBJ(cx, mWhere);
-+    } else if (mWhere->isDenseArray()) {
-+        return js_GetDenseArrayElementValue(cx, mWhere, mProp, vp);
-+    } else {
-+        /* XXX bad API: no way to return "defined but value unknown" */
-+        *vp = JSVAL_TRUE;
++        return JS_TRUE;
 +    }
 +
++    /* XXX bad API: no way to return "defined but value unknown" */
++    *vp = JSVAL_TRUE;
 +    return JS_TRUE;
 +}
 +
@@ -933,7 +934,7 @@ new file mode 100644
 +        if (!mWhere->getAttributes(cx, mId, &desc->attrs) ||
 +            !value(cx, &desc->value)) // TODO
 +            return JS_FALSE;
-+    } else if (mWhere->isNative()) {
++    } else if (inScope()) {
 +        JSScopeProperty *sp = sprop();
 +        desc->attrs = sp->attributes();
 +
@@ -962,7 +963,7 @@ diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.h
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,129 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -1014,7 +1015,8 @@ new file mode 100644
 +{
 +    const jsid mId;
 +    JSObject *mWhere;
-+    JSProperty *mProp;
++    JSProperty *mProp; // TODO Distinguish between dense array ids and
++                       // JSScopeProperties?
 +
 +    bool isNative() const { return wasFound() && mWhere->isNative(); }
 +
@@ -1048,22 +1050,33 @@ new file mode 100644
 +    }
 +
 +    bool wasFound() const { return !!mWhere; }
++    bool inScope() const { return isNative() && mProp; }
 +    bool isVirtual() const { return isNative() && !mProp; }
 +
 +    jsid id() const { return mId; }
-+    JSObject *where() const { JS_ASSERT(wasFound()); return mWhere; }
-+    JSScopeProperty *sprop() const { JS_ASSERT(mProp); return (JSScopeProperty *) mProp; }
++
++    JSObject *where() const {
++        JS_ASSERT(wasFound());
++        return mWhere;
++    }
++
++    JSScopeProperty *sprop() const {
++        JS_ASSERT(inScope());
++        JS_ASSERT(!mWhere->isDenseArray());
++        return (JSScopeProperty *) mProp;
++    }
 +
 +    // TODO Deprecate this in favor of mWhere->getProperty?
 +    /* TODO Make sure that base object is passed in via vp. */
-+    JSBool value(JSContext *cx, jsval *vp, JSBool strict = JS_FALSE) const;
++    JSBool value(JSContext *cx, jsval *vp,
++                 uintN getHow = JSGET_METHOD_BARRIER) const;
 +    JSBool descriptor(JSContext *cx, JSPropertyDescriptor *desc) const;
 +
 +    JSBool setAttributes(JSContext *cx, uintN attrs) {
 +        JS_ASSERT(wasFound());
-+        if (!isNative() || isVirtual())
-+            return mWhere->setAttributes(cx, mId, &attrs);
-+        return js_SetNativeAttributes(cx, mWhere, sprop(), attrs);
++        return (inScope()
++                ? js_SetNativeAttributes(cx, mWhere, sprop(), attrs)
++                : js_SetAttributes(cx, mWhere, mId, &attrs));
 +    }
 +
 +    void forget() {
@@ -1072,7 +1085,7 @@ new file mode 100644
 +    }
 +
 +    void drop(JSContext *cx) {
-+        if (wasFound() && mProp)
++        if (inScope())
 +            mWhere->dropProperty(cx, mProp);
 +    }
 +};
@@ -2702,7 +2715,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
           * chain during JSObject::lookupProperty. So we must check if parent is
           * not null here even if it wasn't before the lookup.
           */
-@@ -4802,32 +4793,32 @@ js_NativeSet(JSContext *cx, JSObject *ob
+@@ -4802,32 +4793,31 @@ js_NativeSet(JSContext *cx, JSObject *ob
  
      return true;
  }
@@ -2715,8 +2728,8 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 +    JSObject *aobj;
      int protoIndex;
 -    JSProperty *prop;
+-    JSScopeProperty *sprop;
 +    JSFoundProperty found(id);
-     JSScopeProperty *sprop;
  
      JS_ASSERT_IF(getHow & JSGET_CACHE_RESULT, !JS_ON_TRACE(cx));
  
@@ -2740,7 +2753,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
          PCMETER(getHow & JSGET_CACHE_RESULT && JS_PROPERTY_CACHE(cx).nofills++);
  
          /*
-@@ -4878,30 +4869,38 @@ js_GetPropertyHelper(JSContext *cx, JSOb
+@@ -4878,31 +4868,25 @@ js_GetPropertyHelper(JSContext *cx, JSOb
                                            JSDVG_IGNORE_STACK, ID_TO_VALUE(id),
                                            NULL, NULL, NULL)) {
                  return JS_FALSE;
@@ -2753,34 +2766,25 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 -        return obj2->getProperty(cx, id, vp);
 -
 -    sprop = (JSScopeProperty *) prop;
+-
+-    if (getHow & JSGET_CACHE_RESULT) {
 +    JS_ASSERT(found.wasFound());
 +
-+    if (!found.where()->isNative())
-+        return found.where()->getProperty(cx, id, vp);
-+
-+    if (found.isVirtual()) {
-+        // TODO Make this work without resorting to js::FoundProperty::value
-+        *vp = JSVAL_VOID;
-+        return JS_TRUE;
-+    }
-+
-+    sprop = found.sprop();
- 
-     if (getHow & JSGET_CACHE_RESULT) {
++    if (getHow & JSGET_CACHE_RESULT && found.inScope()) {
          JS_ASSERT_NOT_ON_TRACE(cx);
 -        JS_PROPERTY_CACHE(cx).fill(cx, aobj, 0, protoIndex, obj2, sprop);
 -    }
 -
 -    if (!js_NativeGet(cx, obj, obj2, sprop, getHow, vp))
-+        JS_PROPERTY_CACHE(cx).fill(cx, aobj, 0, protoIndex, found.where(), sprop);
+-        return JS_FALSE;
+-
+-    JS_UNLOCK_OBJ(cx, obj2);
+-    return JS_TRUE;
++        JS_PROPERTY_CACHE(cx).fill(cx, aobj, 0, protoIndex, found.where(),
++                                   found.sprop());
 +    }
 +
-+    if (!js_NativeGet(cx, obj, found.where(), sprop, getHow, vp))
-         return JS_FALSE;
- 
--    JS_UNLOCK_OBJ(cx, obj2);
-+    JS_UNLOCK_OBJ(cx, found.where());
-     return JS_TRUE;
++    return found.value(cx, vp, getHow);
  }
  
  JSBool
@@ -2788,7 +2792,8 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  {
      return js_GetPropertyHelper(cx, obj, id, JSGET_METHOD_BARRIER, vp);
  }
-@@ -4962,18 +4961,17 @@ ReportReadOnly(JSContext* cx, jsid id, u
+ 
+@@ -4962,18 +4946,17 @@ ReportReadOnly(JSContext* cx, jsid id, u
   * SetPropHit when called from the interpreter, which is detected by testing
   * (defineHow & JSDNP_CACHE_RESULT).
   */
@@ -2808,7 +2813,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      JSPropertyOp getter, setter;
      bool added;
  
-@@ -4987,57 +4985,59 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -4987,57 +4970,59 @@ js_SetPropertyHelper(JSContext *cx, JSOb
  
      /*
       * We peek at obj->scope() without locking obj. Any race means a failure
@@ -2882,7 +2887,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                  if (defineHow & JSDNP_CACHE_RESULT)
                      TRACE_2(SetPropHit, JS_NO_PROP_CACHE_FILL, sprop);
                  return js_ReportGetterOnlyAssignment(cx);
-@@ -5066,32 +5066,33 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -5066,32 +5051,33 @@ js_SetPropertyHelper(JSContext *cx, JSOb
              }
          }
          if (scope->sealed() && !sprop->hasSlot()) {
@@ -2918,7 +2923,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
                  return sprop->set(cx, obj, vp);
              }
-@@ -5198,29 +5199,29 @@ JSBool
+@@ -5198,29 +5184,29 @@ JSBool
  js_SetProperty(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
  {
      return js_SetPropertyHelper(cx, obj, id, 0, vp);
@@ -2957,7 +2962,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                         uintN attrs)
  {
      JS_ASSERT(obj->isNative());
-@@ -5228,69 +5229,77 @@ js_SetNativeAttributes(JSContext *cx, JS
+@@ -5228,69 +5214,77 @@ js_SetNativeAttributes(JSContext *cx, JS
                                           sprop->getter(), sprop->setter());
      JS_UNLOCK_OBJ(cx, obj);
      return (sprop != NULL);
@@ -3051,7 +3056,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      /* XXXbe called with obj locked */
      if (!obj->getClass()->delProperty(cx, obj, SPROP_USERID(sprop), rval)) {
-@@ -5427,17 +5436,16 @@ js_Enumerate(JSContext *cx, JSObject *ob
+@@ -5427,17 +5421,16 @@ js_Enumerate(JSContext *cx, JSObject *ob
  }
  
  JSBool
@@ -3069,7 +3074,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      writing = (mode & JSACC_WRITE) != 0;
      switch (mode & JSACC_TYPEMASK) {
        case JSACC_PROTO:
-@@ -5449,48 +5457,56 @@ js_CheckAccess(JSContext *cx, JSObject *
+@@ -5449,48 +5442,56 @@ js_CheckAccess(JSContext *cx, JSObject *
  
        case JSACC_PARENT:
          JS_ASSERT(!writing);
