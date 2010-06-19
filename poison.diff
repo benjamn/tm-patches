@@ -993,7 +993,7 @@ diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.h
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,170 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -1124,20 +1124,27 @@ new file mode 100644
 +            *attrsp = 0;
 +            return JS_TRUE;
 +        }
-+
 +        if (inScope()) {
 +            *attrsp = sprop()->attributes();
 +            return JS_TRUE;
 +        }
-+
++        // XXX Ugh.
++        if (mWhere->map->ops->getAttributes == js_GetAttributes) {
++            *attrsp = 0;
++            return JS_TRUE;
++        }
 +        return mWhere->getAttributes(cx, mId, attrsp);
 +    }
 +
 +    JSBool setAttributes(JSContext *cx, uintN attrs) {
-+        JS_ASSERT(wasFound());
-+        return (inScope()
-+                ? js_SetNativeAttributes(cx, mWhere, sprop(), attrs)
-+                : js_SetAttributes(cx, mWhere, mId, &attrs));
++        if (!wasFound())
++            return JS_TRUE;
++        if (inScope())
++            return js_SetNativeAttributes(cx, mWhere, sprop(), attrs);
++        // XXX Ugh!
++        if (mWhere->map->ops->setAttributes == js_SetAttributes)
++            return JS_TRUE;
++        return mWhere->setAttributes(cx, mId, &attrs);
 +    }
 +
 +    void forget() {
@@ -3193,7 +3200,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      if (!sprop) {
          /*
           * Purge the property cache of now-shadowed id in obj's scope chain.
-@@ -5178,99 +5173,92 @@ JSBool
+@@ -5178,99 +5173,85 @@ JSBool
  js_SetProperty(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
  {
      return js_SetPropertyHelper(cx, obj, id, 0, vp);
@@ -3237,21 +3244,16 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  {
 -    JSProperty *prop;
 -    if (!js_LookupProperty(cx, obj, id, &obj, &prop))
-+    JSFoundProperty found(id);
-+    if (!js_LookupProperty(cx, obj, id, &found))
-         return false;
+-        return false;
 -    if (!prop)
-+    if (!found.wasFound())
-         return true;
+-        return true;
 -    return obj->isNative()
 -           ? js_SetNativeAttributes(cx, obj, (JSScopeProperty *) prop, *attrsp)
 -           : obj->setAttributes(cx, id, attrsp);
-+
-+    if (found.isVirtual() ||
-+        !found.where()->isNative())
-+        return obj->setAttributes(cx, id, attrsp);
-+
-+    return js_SetNativeAttributes(cx, obj, found.sprop(), *attrsp);
++    JSFoundProperty found(id);
++    if (!js_LookupProperty(cx, obj, id, &found))
++        return JS_FALSE;
++    return found.setAttributes(cx, *attrsp);
  }
  
  JSBool
@@ -3319,7 +3321,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      /* XXXbe called with obj locked */
      if (!obj->getClass()->delProperty(cx, obj, SPROP_USERID(sprop), rval)) {
-@@ -5409,19 +5397,17 @@ js_Enumerate(JSContext *cx, JSObject *ob
+@@ -5409,19 +5390,17 @@ js_Enumerate(JSContext *cx, JSObject *ob
  namespace js {
  
  JSBool
@@ -3339,7 +3341,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      writing = (mode & JSACC_WRITE) != 0;
      switch (mode & JSACC_TYPEMASK) {
-@@ -5434,43 +5420,37 @@ CheckAccess(JSContext *cx, JSObject *obj
+@@ -5434,43 +5413,37 @@ CheckAccess(JSContext *cx, JSObject *obj
  
        case JSACC_PARENT:
          JS_ASSERT(!writing);
