@@ -855,7 +855,7 @@ diff --git a/js/src/jsfoundprop.cpp b/js/src/jsfoundprop.cpp
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.cpp
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,133 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -951,10 +951,19 @@ new file mode 100644
 +    desc->obj = mWhere;
 +
 +    if (isVirtual()) {
-+        desc->getter = desc->setter = NULL; // TODO
++        /*
++         * It makes no sense for virtual properties to have getters or
++         * setters. In some sense, a virtual property always has a native
++         * getter (the getProperty JSClass hook), and can never have a
++         * setter, since setting a property shadows any virtual property
++         * of the same name.  This could change in the future; for
++         * instance, a virtual property might want to prevent shadowing,
++         * but there is probably a better way of doing that.
++         */
++        desc->getter = desc->setter = NULL;
 +        desc->shortid = 0;
 +        if (!getAttributes(cx, &desc->attrs) ||
-+            !getValue(cx, &desc->value)) // TODO
++            !getValue(cx, &desc->value)) /* XXX Might not always be wanted? */
 +            return JS_FALSE;
 +    } else if (inScope()) {
 +        JSScopeProperty *sp = sprop();
@@ -984,7 +993,7 @@ diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.h
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,163 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -1105,7 +1114,6 @@ new file mode 100644
 +        return (JSScopeProperty *) mProp;
 +    }
 +
-+    // TODO Deprecate this in favor of mWhere->getProperty?
 +    /* TODO Make sure that base object is passed in via vp. */
 +    JSBool getValue(JSContext *cx, jsval *vp,
 +                    uintN getHow = JSGET_METHOD_BARRIER) const;
