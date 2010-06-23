@@ -1000,7 +1000,7 @@ diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.h
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,172 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -1075,9 +1075,10 @@ new file mode 100644
 +    ~FoundProperty() { unlock(); }
 +
 +    void set(JSContext *cx,
-+             JSObject *where = NULL,
-+             JSProperty *prop = NULL)
++             JSObject *where,
++             JSProperty *prop)
 +    {
++        JS_ASSERT(cx);
 +        JS_ASSERT(!prop || where);
 +
 +        unlock();
@@ -2736,7 +2737,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
 -    *objp = NULL;
 -    *propp = NULL;
-+    found->set(NULL, NULL);
++    found->set(cx, NULL, NULL);
      return protoIndex;
  }
  
@@ -5201,7 +5202,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
      if (!found) {
 -        *objp = NULL;
 -        *propp = NULL;
-+        fp->set(NULL, NULL);
++        fp->set(cx, NULL, NULL);
      } else {
          sprop = js_AddNativeProperty(cx, obj, id, GetProperty, PutProperty,
                                       SPROP_INVALID_SLOT, JSPROP_ENUMERATE,
