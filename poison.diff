@@ -60,7 +60,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
  
  #if JS_HAS_XML_SUPPORT
  #include "jsxml.h"
-@@ -3026,68 +3027,35 @@ JS_ConstructObjectWithArguments(JSContex
+@@ -2998,68 +2999,35 @@ JS_ConstructObjectWithArguments(JSContex
      assertSameCompartment(cx, proto, parent, ValueArray(argv, argc));
      if (!clasp)
          clasp = &js_ObjectClass;    /* default class is Object */
@@ -135,7 +135,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      return JS_LookupPropertyById(cx, obj, INT_TO_JSID(index), vp);
  }
  
-@@ -3105,51 +3073,51 @@ JS_LookupUCProperty(JSContext *cx, JSObj
+@@ -3077,51 +3045,51 @@ JS_LookupUCProperty(JSContext *cx, JSObj
      return atom && JS_LookupPropertyById(cx, obj, ATOM_TO_JSID(atom), vp);
  }
  
@@ -155,7 +155,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
 -    return ok && LookupResult(cx, obj, *objp, prop, vp);
 +        ? js_LookupPropertyWithFlags(cx, obj, id, flags, &found) >= 0
 +        : obj->lookupProperty(cx, id, &found);
-+    *objp = found.where();
++    *objp = found.where(true);
 +    *vp = OBJECT_TO_JSVAL(obj);
 +    return ok && found.getValue(cx, vp);
  }
@@ -200,7 +200,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      return JS_HasPropertyById(cx, obj, INT_TO_JSID(index), foundp);
  }
  
-@@ -3169,26 +3137,24 @@ JS_HasUCProperty(JSContext *cx, JSObject
+@@ -3141,26 +3109,24 @@ JS_HasUCProperty(JSContext *cx, JSObject
  
  JS_PUBLIC_API(JSBool)
  JS_AlreadyHasOwnPropertyById(JSContext *cx, JSObject *obj, jsid id, JSBool *foundp)
@@ -231,7 +231,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      *foundp = scope->hasProperty(id);
      JS_UNLOCK_SCOPE(cx, scope);
      return JS_TRUE;
-@@ -3373,144 +3339,110 @@ JS_DefineProperties(JSContext *cx, JSObj
+@@ -3345,144 +3311,110 @@ JS_DefineProperties(JSContext *cx, JSObj
              break;
      }
      return ok;
@@ -403,7 +403,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
  {
      return GetPropertyDescriptorById(cx, obj, id, flags, JS_FALSE, desc);
  }
-@@ -3577,33 +3509,30 @@ JS_GetOwnPropertyDescriptor(JSContext *c
+@@ -3549,33 +3481,30 @@ JS_GetOwnPropertyDescriptor(JSContext *c
  {
      CHECK_REQUEST(cx);
      return js_GetOwnPropertyDescriptor(cx, obj, id, vp);
@@ -453,7 +453,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
 diff --git a/js/src/jsapi.h b/js/src/jsapi.h
 --- a/js/src/jsapi.h
 +++ b/js/src/jsapi.h
-@@ -1533,17 +1533,19 @@ struct JSExtendedClass {
+@@ -1431,17 +1431,19 @@ struct JSExtendedClass {
      void                (*reserved1)(void);
      void                (*reserved2)(void);
  };
@@ -1000,7 +1000,7 @@ diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.h
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,171 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -1086,7 +1086,8 @@ new file mode 100644
 +        mProp = prop;
 +        mLockCx = isNative() ? cx : NULL;
 +
-+        JS_ASSERT(!mWhere || !mLockCx == !JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
++        JS_ASSERT(!mWhere || !isNative() ||
++                  !mLockCx == !JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
 +        JS_ASSERT(!isVirtual() ||
 +                  mWhere->getClass()->flags & JSCLASS_VIRTUAL_RESOLVE);
 +    }
@@ -1110,8 +1111,8 @@ new file mode 100644
 +
 +    jsid id() const { return mId; }
 +
-+    JSObject *where() const {
-+        JS_ASSERT(wasFound());
++    JSObject *where(bool nullOk = false) const {
++        JS_ASSERT(nullOk || wasFound());
 +        return mWhere;
 +    }
 +
@@ -1305,7 +1306,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
  #include "jspropertycacheinlines.h"
  #include "jsscopeinlines.h"
  #include "jsscriptinlines.h"
-@@ -861,75 +862,57 @@ js_Execute(JSContext *cx, JSObject *cons
+@@ -868,75 +869,57 @@ js_Execute(JSContext *cx, JSObject *cons
              hook(cx, fp, JS_FALSE, &ok, hookData);
      }
  
@@ -1394,7 +1395,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
  
              /*
               * Allow adding a getter only if a property already has a setter
-@@ -944,18 +927,16 @@ js_CheckRedeclaration(JSContext *cx, JSO
+@@ -951,18 +934,16 @@ js_CheckRedeclaration(JSContext *cx, JSO
  
              /*
               * Allow redeclaration of an impermanent property (in which case
@@ -1413,7 +1414,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
                  return JS_FALSE;
              isFunction = VALUE_IS_FUNCTION(cx, value);
          }
-@@ -2041,28 +2022,27 @@ js_Interpret(JSContext *cx)
+@@ -2048,28 +2029,27 @@ js_Interpret(JSContext *cx)
  
      JSRuntime *rt;
      JSStackFrame *fp;
@@ -4695,7 +4696,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
  #include "jsscopeinlines.h"
  #include "jsscriptinlines.h"
  
-@@ -7858,29 +7859,32 @@ JS_REQUIRES_STACK AbortableRecordingStat
+@@ -7872,29 +7873,32 @@ JS_REQUIRES_STACK AbortableRecordingStat
  TraceRecorder::scopeChainProp(JSObject* chainHead, jsval*& vp, LIns*& ins, NameResult& nr)
  {
      JS_ASSERT(chainHead == cx->fp->scopeChain);
@@ -4732,7 +4733,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
          if (cx->fp->argv) {
              // Skip any Call object when inside a function. Any reference to a
              // Call name the compiler resolves statically and we do not need
-@@ -7888,45 +7892,46 @@ TraceRecorder::scopeChainProp(JSObject* 
+@@ -7902,45 +7906,46 @@ TraceRecorder::scopeChainProp(JSObject* 
              chainHead = cx->fp->calleeObject()->getParent();
              head_ins = stobj_get_parent(get(&cx->fp->argv[-2]));
          } else {
@@ -4788,7 +4789,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
   */
  JS_REQUIRES_STACK RecordingStatus
  TraceRecorder::callProp(JSObject* obj, JSProperty* prop, jsid id, jsval*& vp,
-@@ -9199,72 +9204,73 @@ TraceRecorder::test_property_cache(JSObj
+@@ -9213,72 +9218,73 @@ TraceRecorder::test_property_cache(JSObj
          RETURN_STOP_A("non-native object");
  
      JSAtom* atom;
@@ -4805,7 +4806,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
              TraceMonitor &localtm = *traceMonitor;
 -            entry = js_FindPropertyHelper(cx, id, true, &obj, &obj2, &prop);
 +            entry = js_FindPropertyHelper(cx, id, true, &obj, &found);
-+            obj2 = found.wasFound() ? found.where() : NULL;
++            obj2 = found.where(true);
              if (!entry)
                  RETURN_ERROR_A("error in js_FindPropertyHelper");
  
@@ -4824,7 +4825,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
 +            int protoIndex =
 +                js_LookupPropertyWithFlags(cx, aobj, id, cx->resolveFlags,
 +                                           &found);
-+            obj2 = found.where();
++            obj2 = found.where(true);
  
              if (protoIndex < 0)
                  RETURN_ERROR_A("error in js_LookupPropertyWithFlags");
@@ -4875,7 +4876,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
      // There's a potential race in any JS_THREADSAFE embedding that's nuts
      // enough to share mutable objects on the scope or proto chain, but we
      // don't care about such insane embeddings. Anyway, the (scope, proto)
-@@ -11875,21 +11881,20 @@ TraceRecorder::getPropertyById(LIns* obj
+@@ -11889,21 +11895,20 @@ TraceRecorder::getPropertyById(LIns* obj
  
  /* Manually inlined, specialized copy of js_NativeGet. */
  static JSBool FASTCALL
@@ -4901,7 +4902,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
      JS_ASSERT(obj->getClass() != &js_WithClass);
  
      *vp = JSVAL_VOID;
-@@ -14160,33 +14165,30 @@ TraceRecorder::record_JSOP_IN()
+@@ -14174,33 +14179,30 @@ TraceRecorder::record_JSOP_IN()
      }
  
      guard(false, lir->ins2ImmI(LIR_eqi, x, JSVAL_TO_SPECIAL(JSVAL_VOID)), OOM_EXIT);
@@ -5107,7 +5108,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
  #include <string.h>     /* for #ifdef DEBUG memset calls */
  #endif
  
-@@ -4483,46 +4484,44 @@ HasIndexedProperty(JSXML *xml, uint32 i)
+@@ -4491,46 +4492,44 @@ HasIndexedProperty(JSXML *xml, uint32 i)
  }
  
  static JSBool
@@ -5163,7 +5164,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
  HasProperty(JSContext *cx, JSObject *obj, jsval id, JSBool *found)
  {
      JSXML *xml;
-@@ -4592,18 +4591,18 @@ xml_trace_vector(JSTracer *trc, JSXML **
+@@ -4600,18 +4599,18 @@ xml_trace_vector(JSTracer *trc, JSXML **
   * We partially workaround the problem in GetXMLFunction. There we take
   * advantage of the fact that typically function:: is used to access the
   * functions from XML.prototype. So when js_GetProperty returns a non-function
@@ -5184,7 +5185,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
      JSObject *qn;
      jsid funid;
      JSScopeProperty *sprop;
-@@ -4612,32 +4611,30 @@ xml_lookupProperty(JSContext *cx, JSObje
+@@ -4620,32 +4619,30 @@ xml_lookupProperty(JSContext *cx, JSObje
      xml = (JSXML *) obj->getPrivate();
      if (js_IdIsIndex(v, &i)) {
          found = HasIndexedProperty(xml, i);
@@ -5220,7 +5221,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
  xml_defineProperty(JSContext *cx, JSObject *obj, jsid id, jsval value,
                     JSPropertyOp getter, JSPropertyOp setter, uintN attrs)
  {
-@@ -6975,20 +6972,19 @@ js_InitAnyNameClass(JSContext *cx, JSObj
+@@ -6983,20 +6980,19 @@ js_InitAnyNameClass(JSContext *cx, JSObj
      if (!js_GetAnyName(cx, &v))
          return NULL;
      return JSVAL_TO_OBJECT(v);
@@ -5242,7 +5243,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
          return NULL;
  
      /* Define the XML class constructor and prototype. */
-@@ -7006,26 +7002,25 @@ js_InitXMLClass(JSContext *cx, JSObject 
+@@ -7014,26 +7010,25 @@ js_InitXMLClass(JSContext *cx, JSObject 
      METER(xml_stats.xmlobj);
  
      /*
@@ -5277,7 +5278,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
      vp[2] = JSVAL_VOID;
      if (!xml_setSettings(cx, 1, vp))
          return NULL;
-@@ -7340,20 +7335,19 @@ js_GetAnyName(JSContext *cx, jsval *vp)
+@@ -7348,20 +7343,19 @@ js_GetAnyName(JSContext *cx, jsval *vp)
  
  JSBool
  js_FindXMLProperty(JSContext *cx, jsval nameval, JSObject **objp, jsid *idp)
@@ -5299,7 +5300,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
          v = STRING_TO_JSVAL(ATOM_TO_STRING(cx->runtime->atomState.starAtom));
          nameobj = js_ConstructObject(cx, &js_QNameClass.base, NULL, NULL, 1,
                                       &v);
-@@ -7388,20 +7382,21 @@ js_FindXMLProperty(JSContext *cx, jsval 
+@@ -7396,20 +7390,21 @@ js_FindXMLProperty(JSContext *cx, jsval 
                      return JS_FALSE;
              }
              if (found) {
