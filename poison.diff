@@ -60,7 +60,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
  
  #if JS_HAS_XML_SUPPORT
  #include "jsxml.h"
-@@ -3026,68 +3027,34 @@ JS_ConstructObjectWithArguments(JSContex
+@@ -3026,68 +3027,35 @@ JS_ConstructObjectWithArguments(JSContex
      assertSameCompartment(cx, proto, parent, ValueArray(argv, argc));
      if (!clasp)
          clasp = &js_ObjectClass;    /* default class is Object */
@@ -124,6 +124,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
 -    return LookupPropertyById(cx, obj, id, JSRESOLVE_QUALIFIED, &obj2, &prop) &&
 -           LookupResult(cx, obj, obj2, prop, vp);
 +    JSFoundProperty found(id);
++    *vp = OBJECT_TO_JSVAL(obj);
 +    return LookupPropertyById(cx, obj, id, JSRESOLVE_QUALIFIED, &found) &&
 +           found.getValue(cx, vp);
  }
@@ -134,7 +135,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      return JS_LookupPropertyById(cx, obj, INT_TO_JSID(index), vp);
  }
  
-@@ -3105,51 +3072,50 @@ JS_LookupUCProperty(JSContext *cx, JSObj
+@@ -3105,51 +3073,51 @@ JS_LookupUCProperty(JSContext *cx, JSObj
      return atom && JS_LookupPropertyById(cx, obj, ATOM_TO_JSID(atom), vp);
  }
  
@@ -155,6 +156,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
 +        ? js_LookupPropertyWithFlags(cx, obj, id, flags, &found) >= 0
 +        : obj->lookupProperty(cx, id, &found);
 +    *objp = found.where();
++    *vp = OBJECT_TO_JSVAL(obj);
 +    return ok && found.getValue(cx, vp);
  }
  
@@ -198,7 +200,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      return JS_HasPropertyById(cx, obj, INT_TO_JSID(index), foundp);
  }
  
-@@ -3169,26 +3135,24 @@ JS_HasUCProperty(JSContext *cx, JSObject
+@@ -3169,26 +3137,24 @@ JS_HasUCProperty(JSContext *cx, JSObject
  
  JS_PUBLIC_API(JSBool)
  JS_AlreadyHasOwnPropertyById(JSContext *cx, JSObject *obj, jsid id, JSBool *foundp)
@@ -229,7 +231,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
      *foundp = scope->hasProperty(id);
      JS_UNLOCK_SCOPE(cx, scope);
      return JS_TRUE;
-@@ -3373,144 +3337,110 @@ JS_DefineProperties(JSContext *cx, JSObj
+@@ -3373,144 +3339,110 @@ JS_DefineProperties(JSContext *cx, JSObj
              break;
      }
      return ok;
@@ -401,7 +403,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
  {
      return GetPropertyDescriptorById(cx, obj, id, flags, JS_FALSE, desc);
  }
-@@ -3577,33 +3507,30 @@ JS_GetOwnPropertyDescriptor(JSContext *c
+@@ -3577,33 +3509,30 @@ JS_GetOwnPropertyDescriptor(JSContext *c
  {
      CHECK_REQUEST(cx);
      return js_GetOwnPropertyDescriptor(cx, obj, id, vp);
@@ -857,7 +859,7 @@ diff --git a/js/src/jsfoundprop.cpp b/js/src/jsfoundprop.cpp
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.cpp
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,136 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -924,8 +926,11 @@ new file mode 100644
 +        JS_ASSERT(JSVAL_IS_OBJECT(*vp));
 +        JSObject *obj = JSVAL_TO_OBJECT(*vp);
 +        JS_ASSERT(obj);
-+        if (!js_NativeGet(cx, obj, mWhere, sprop(), getHow, vp))
++        if (!js_NativeGet(cx, obj, mWhere, sprop(), getHow, vp)) {
++            // XXX js_NativeGet unlocks on failure, hence this hack:
++            const_cast<FoundProperty*>(this)->mLockCx = NULL;
 +            return JS_FALSE;
++        }
 +        return JS_TRUE;
 +    }
 +
@@ -1081,7 +1086,7 @@ new file mode 100644
 +        mProp = prop;
 +        mLockCx = isNative() ? cx : NULL;
 +
-+        JS_ASSERT(!mLockCx == !JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
++        JS_ASSERT(!mWhere || !mLockCx == !JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
 +        JS_ASSERT(!isVirtual() ||
 +                  mWhere->getClass()->flags & JSCLASS_VIRTUAL_RESOLVE);
 +    }
@@ -1157,8 +1162,8 @@ new file mode 100644
 +
 +    void drop(JSContext *cx) {
 +        if (inScope()) {
++            unlock(); // dropProperty unlocks, so unlock first
 +            mWhere->dropProperty(cx, mProp);
-+            unlock();
 +        }
 +    }
 +};
@@ -1300,7 +1305,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
  #include "jspropertycacheinlines.h"
  #include "jsscopeinlines.h"
  #include "jsscriptinlines.h"
-@@ -861,75 +862,61 @@ js_Execute(JSContext *cx, JSObject *cons
+@@ -861,75 +862,57 @@ js_Execute(JSContext *cx, JSObject *cons
              hook(cx, fp, JS_FALSE, &ok, hookData);
      }
  
@@ -1363,9 +1368,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
 -        *objp = obj2;
 -        *propp = prop;
 -    }
-+    if (!found_rval)
-+        found_local.forget();
-+    else
++    if (found_rval)
 +        *found_rval = found_local;
  
      if (attrs == JSPROP_INITIALIZER) {
@@ -1374,9 +1377,8 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
 +        if (found_local.where() != obj)
              return JS_TRUE;
  
-         /* The property must be dropped already. */
+-        /* The property must be dropped already. */
 -        JS_ASSERT(!prop);
-+        JS_ASSERT(!found_local.wasFound());
          report = JSREPORT_WARNING | JSREPORT_STRICT;
  
  #ifdef __GNUC__
@@ -1392,7 +1394,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
  
              /*
               * Allow adding a getter only if a property already has a setter
-@@ -944,18 +931,16 @@ js_CheckRedeclaration(JSContext *cx, JSO
+@@ -944,18 +927,16 @@ js_CheckRedeclaration(JSContext *cx, JSO
  
              /*
               * Allow redeclaration of an impermanent property (in which case
@@ -1411,7 +1413,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
                  return JS_FALSE;
              isFunction = VALUE_IS_FUNCTION(cx, value);
          }
-@@ -2041,28 +2026,28 @@ js_Interpret(JSContext *cx)
+@@ -2041,28 +2022,27 @@ js_Interpret(JSContext *cx)
  
      JSRuntime *rt;
      JSStackFrame *fp;
@@ -1433,7 +1435,6 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
      jsval *vp, lval, rval, ltmp, rtmp;
      jsid id;
 -    JSProperty *prop;
-+    LazilyConstructed<JSFoundProperty> lcfp;
      JSScopeProperty *sprop;
      JSString *str, *str2;
      int32_t i, j;
@@ -2308,7 +2309,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
       */
      VOUCH_DOES_NOT_REQUIRE_STACK();
      if (!start && (fp = cx->fp) != NULL)
-@@ -3812,32 +3805,22 @@ js_FindClassObject(JSContext *cx, JSObje
+@@ -3812,32 +3805,23 @@ js_FindClassObject(JSContext *cx, JSObje
      } else {
          JSAtom *atom = js_Atomize(cx, clasp->name, strlen(clasp->name), 0);
          if (!atom)
@@ -2336,6 +2337,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 -    }
 -    *vp = v;
 -    return JS_TRUE;
++    *vp = OBJECT_TO_JSVAL(obj);
 +    return found.getValue(cx, vp);
  }
  
@@ -2345,7 +2347,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  {
      jsval cval, rval;
      JSObject *obj, *ctor;
-@@ -4135,17 +4118,17 @@ AddPropertyHelper(JSContext *cx, JSClass
+@@ -4135,17 +4119,17 @@ AddPropertyHelper(JSContext *cx, JSClass
          }
      }
      return true;
@@ -2364,7 +2366,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      JSBool added;
  
      JS_ASSERT((defineHow & ~(JSDNP_CACHE_RESULT | JSDNP_DONT_PURGE | JSDNP_SET_METHOD)) == 0);
-@@ -4156,46 +4139,47 @@ js_DefineNativeProperty(JSContext *cx, J
+@@ -4156,46 +4140,47 @@ js_DefineNativeProperty(JSContext *cx, J
  
      /*
       * If defining a getter or setter, we must check for its counterpart and
@@ -2420,7 +2422,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
       * Purge the property cache of any properties named by id that are about
       * to be shadowed in obj's scope chain unless it is known a priori that it
       * is not possible. We do this before locking obj to avoid nesting locks.
-@@ -4272,332 +4256,345 @@ js_DefineNativeProperty(JSContext *cx, J
+@@ -4272,332 +4257,345 @@ js_DefineNativeProperty(JSContext *cx, J
      }
  
      if (defineHow & JSDNP_CACHE_RESULT) {
@@ -2632,9 +2634,9 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                      JS_UNLOCK_OBJ(cx, obj2);
                  JS_LOCK_OBJ(cx, obj);
              }
-+            if (!sprop && JSCLASS_VIRTUAL_RESOLVE != masked)
-+                obj = NULL; /* Nothing found. */
          }
++        if (!sprop && JSCLASS_VIRTUAL_RESOLVE != masked)
++            obj = NULL; /* Nothing found. */
      } else {
          /*
           * Old resolve always requires id re-lookup if obj owns
@@ -2867,7 +2869,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      /*
       * This function should not be called for a global object or from the
       * trace and should have a valid cache entry for native scopeChain.
-@@ -4614,53 +4611,51 @@ js_FindIdentifierBase(JSContext *cx, JSO
+@@ -4614,53 +4612,51 @@ js_FindIdentifierBase(JSContext *cx, JSO
       * js_Interpret.
       *
       * The test order here matters because js_IsCacheableNonGlobalScope
@@ -2937,7 +2939,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
           * chain during JSObject::lookupProperty. So we must check if parent is
           * not null here even if it wasn't before the lookup.
           */
-@@ -4782,32 +4777,31 @@ js_NativeSet(JSContext *cx, JSObject *ob
+@@ -4782,32 +4778,31 @@ js_NativeSet(JSContext *cx, JSObject *ob
  
      return true;
  }
@@ -2975,7 +2977,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
          PCMETER(getHow & JSGET_CACHE_RESULT && JS_PROPERTY_CACHE(cx).nofills++);
  
          /*
-@@ -4858,31 +4852,25 @@ js_GetPropertyHelper(JSContext *cx, JSOb
+@@ -4858,31 +4853,26 @@ js_GetPropertyHelper(JSContext *cx, JSOb
                                            JSDVG_IGNORE_STACK, ID_TO_VALUE(id),
                                            NULL, NULL, NULL)) {
                  return JS_FALSE;
@@ -3006,6 +3008,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 +                                   found.sprop());
 +    }
 +
++    *vp = OBJECT_TO_JSVAL(aobj);
 +    return found.getValue(cx, vp, getHow);
  }
  
@@ -3015,7 +3018,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      return js_GetPropertyHelper(cx, obj, id, JSGET_METHOD_BARRIER, vp);
  }
  
-@@ -4942,96 +4930,93 @@ ReportReadOnly(JSContext* cx, jsid id, u
+@@ -4942,96 +4932,93 @@ ReportReadOnly(JSContext* cx, jsid id, u
   * SetPropHit when called from the interpreter, which is detected by testing
   * (defineHow & JSDNP_CACHE_RESULT).
   */
@@ -3131,7 +3134,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                  }
  
                  /* Warn in strict mode, otherwise do nothing. */
-@@ -5041,37 +5026,38 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -5041,37 +5028,38 @@ js_SetPropertyHelper(JSContext *cx, JSOb
  
  #ifdef JS_TRACER
                error: // TRACE_2 jumps here in case of error.
@@ -3174,7 +3177,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
                  return sprop->set(cx, obj, vp);
              }
-@@ -5094,18 +5080,25 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -5094,18 +5082,25 @@ js_SetPropertyHelper(JSContext *cx, JSOb
              }
  
              /*
@@ -3201,7 +3204,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      if (!sprop) {
          /*
           * Purge the property cache of now-shadowed id in obj's scope chain.
-@@ -5178,99 +5171,84 @@ JSBool
+@@ -5178,99 +5173,84 @@ JSBool
  js_SetProperty(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
  {
      return js_SetPropertyHelper(cx, obj, id, 0, vp);
@@ -3320,7 +3323,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      /* XXXbe called with obj locked */
      if (!callJSPropertyOp(cx, obj->getClass()->delProperty, obj, SPROP_USERID(sprop), rval)) {
-@@ -5409,19 +5387,17 @@ js_Enumerate(JSContext *cx, JSObject *ob
+@@ -5409,19 +5389,17 @@ js_Enumerate(JSContext *cx, JSObject *ob
  namespace js {
  
  JSBool
@@ -3340,7 +3343,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      writing = (mode & JSACC_WRITE) != 0;
      switch (mode & JSACC_TYPEMASK) {
-@@ -5434,43 +5410,37 @@ CheckAccess(JSContext *cx, JSObject *obj
+@@ -5434,43 +5412,47 @@ CheckAccess(JSContext *cx, JSObject *obj
  
        case JSACC_PARENT:
          JS_ASSERT(!writing);
@@ -3368,26 +3371,25 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
          }
  
 -        if (!pobj->isNative()) {
--            if (!writing) {
--                *vp = JSVAL_VOID;
--                *attrsp = 0;
--            }
--            break;
--        }
--
++        if (!found.inScope()) {
+             if (!writing) {
+                 *vp = JSVAL_VOID;
+                 *attrsp = 0;
+             }
+             break;
+         }
+ 
 -        sprop = (JSScopeProperty *)prop;
--        *attrsp = sprop->attributes();
--        if (!writing) {
--            *vp = (SPROP_HAS_VALID_SLOT(sprop, pobj->scope()))
++        JSScopeProperty *sprop = found.sprop();
+         *attrsp = sprop->attributes();
+         if (!writing) {
+             *vp = (SPROP_HAS_VALID_SLOT(sprop, pobj->scope()))
 -                  ? pobj->lockedGetSlot(sprop->slot)
 -                  : JSVAL_VOID;
--        }
++                ? pobj->lockedGetSlot(sprop->slot)
++                : JSVAL_VOID;
+         }
 -        JS_UNLOCK_OBJ(cx, pobj);
-+        if (!found.getAttributes(cx, attrsp))
-+            return JS_FALSE;
-+
-+        if (!writing && !found.getValue(cx, vp))
-+            return JS_FALSE;
 +      }
      }
  
@@ -3516,7 +3518,7 @@ diff --git a/js/src/jsobj.h b/js/src/jsobj.h
 diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
 --- a/js/src/jsops.cpp
 +++ b/js/src/jsops.cpp
-@@ -439,21 +439,21 @@ END_CASE(JSOP_ANDX)
+@@ -439,21 +439,23 @@ END_CASE(JSOP_ANDX)
  BEGIN_CASE(JSOP_IN)
      rval = FETCH_OPND(-1);
      if (JSVAL_IS_PRIMITIVE(rval)) {
@@ -3526,14 +3528,17 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      obj = JSVAL_TO_OBJECT(rval);
      FETCH_ELEMENT_ID(obj, -2, id);
 -    if (!obj->lookupProperty(cx, id, &obj2, &prop))
-+    lcfp.construct(id);
-+    if (!obj->lookupProperty(cx, id, lcfp.addr()))
-         goto error;
+-        goto error;
 -    cond = prop != NULL;
 -    if (prop)
 -        obj2->dropProperty(cx, prop);
-+    cond = lcfp.ref().wasFound();
-+    lcfp.ref().drop(cx);
++    {
++        JSFoundProperty found(id);
++        if (!obj->lookupProperty(cx, id, &found))
++            goto error;
++        cond = found.wasFound();
++        found.drop(cx);
++    }
      TRY_BRANCH_AFTER_COND(cond, 2);
      regs.sp--;
      STORE_OPND(-1, BOOLEAN_TO_JSVAL(cond));
@@ -3542,7 +3547,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
  BEGIN_CASE(JSOP_ITER)
      JS_ASSERT(regs.sp > StackBase(fp));
      flags = regs.pc[1];
-@@ -499,21 +499,20 @@ BEGIN_CASE(JSOP_FORLOCAL)
+@@ -499,21 +501,22 @@ BEGIN_CASE(JSOP_FORLOCAL)
      JS_ASSERT(!JSVAL_IS_PRIMITIVE(regs.sp[-1]));
      if (!IteratorNext(cx, JSVAL_TO_OBJECT(regs.sp[-1]), &fp->slots()[slot]))
          goto error;
@@ -3553,12 +3558,15 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      LOAD_ATOM(0);
 -    id = ATOM_TO_JSID(atom);
 -    if (!js_FindProperty(cx, id, &obj, &obj2, &prop))
-+    lcfp.construct(id = ATOM_TO_JSID(atom));
-+    if (!js_FindProperty(cx, id, &obj, lcfp.addr()))
-         goto error;
+-        goto error;
 -    if (prop)
 -        obj2->dropProperty(cx, prop);
-+    lcfp.ref().drop(cx);
++    {
++        JSFoundProperty found(id = ATOM_TO_JSID(atom));
++        if (!js_FindProperty(cx, id, &obj, &found))
++            goto error;
++        found.drop(cx);
++    }
      {
          AutoValueRooter tvr(cx);
          JS_ASSERT(!JSVAL_IS_PRIMITIVE(regs.sp[-1]));
@@ -3567,7 +3575,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
          ok = obj->setProperty(cx, id, tvr.addr());
          if (!ok)
              goto error;
-@@ -685,16 +684,17 @@ BEGIN_CASE(JSOP_ENUMCONSTELEM)
+@@ -685,16 +688,17 @@ BEGIN_CASE(JSOP_ENUMCONSTELEM)
          goto error;
      }
      regs.sp -= 3;
@@ -3585,7 +3593,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
           * adds the property to the global.
           *
           * As a consequence of this optimization for the global object we run
-@@ -707,19 +707,19 @@ BEGIN_CASE(JSOP_BINDNAME)
+@@ -707,19 +711,19 @@ BEGIN_CASE(JSOP_BINDNAME)
           * object reference, which also calls the hooks only after evaluating
           * the rhs. We desire such resolve hook equivalence between the two
           * forms.
@@ -3607,7 +3615,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
          if (!obj)
              goto error;
      } while (0);
-@@ -780,62 +780,63 @@ END_CASE(JSOP_BITAND)
+@@ -780,62 +784,63 @@ END_CASE(JSOP_BITAND)
      JS_END_MACRO
  
  /*
@@ -3686,7 +3694,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
                  cond = (JSVAL_IS_NULL(rval) || JSVAL_IS_VOID(rval)) OP 1;     \
              } else if (JSVAL_IS_NULL(rval) || JSVAL_IS_VOID(rval)) {          \
                  cond = 1 OP 0;                                                \
-@@ -958,20 +959,21 @@ END_CASE(JSOP_URSH)
+@@ -958,20 +963,21 @@ END_CASE(JSOP_URSH)
  
  #undef BITWISE_OP
  #undef SIGNED_SHIFT_OP
@@ -3710,7 +3718,8 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      {
          if (!JSVAL_IS_PRIMITIVE(lval))
              DEFAULT_VALUE(cx, -2, JSTYPE_VOID, lval);
-@@ -1122,24 +1124,24 @@ END_CASE(JSOP_NEG)
+@@ -1121,28 +1127,30 @@ BEGIN_CASE(JSOP_NEG)
+ END_CASE(JSOP_NEG)
  
  BEGIN_CASE(JSOP_POS)
      if (!ValueToNumberValue(cx, &regs.sp[-1]))
@@ -3718,28 +3727,33 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
  END_CASE(JSOP_POS)
  
  BEGIN_CASE(JSOP_DELNAME)
++{
      LOAD_ATOM(0);
 -    id = ATOM_TO_JSID(atom);
 -    if (!js_FindProperty(cx, id, &obj, &obj2, &prop))
-+    lcfp.construct(id = ATOM_TO_JSID(atom));
-+    if (!js_FindProperty(cx, id, &obj, lcfp.addr()))
++    JSFoundProperty found(id = ATOM_TO_JSID(atom));
++    if (!js_FindProperty(cx, id, &obj, &found))
          goto error;
  
      /* ECMA says to return true if name is undefined or inherited. */
      PUSH_OPND(JSVAL_TRUE);
 -    if (prop) {
 -        obj2->dropProperty(cx, prop);
-+    if (lcfp.ref().wasFound()) {
-+        lcfp.ref().drop(cx);
++    if (found.wasFound()) {
++        found.drop(cx);
          if (!obj->deleteProperty(cx, id, &regs.sp[-1]))
              goto error;
      }
++}
  END_CASE(JSOP_DELNAME)
  
  BEGIN_CASE(JSOP_DELPROP)
      LOAD_ATOM(0);
      id = ATOM_TO_JSID(atom);
-@@ -1191,24 +1193,25 @@ BEGIN_CASE(JSOP_PROPDEC)
+     PROPERTY_OP(-1, obj->deleteProperty(cx, id, &rval));
+     STORE_OPND(-1, rval);
+ END_CASE(JSOP_DELPROP)
+@@ -1191,24 +1199,25 @@ BEGIN_CASE(JSOP_PROPDEC)
          FETCH_ELEMENT_ID(obj, -1, id);
      goto do_incop;
  
@@ -3768,7 +3782,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
                  rval += (js_CodeSpec[op].format & JOF_INC) ? 2 : -2;
                  if (!(js_CodeSpec[op].format & JOF_POST))
                      rtmp = rval;
-@@ -1216,22 +1219,22 @@ BEGIN_CASE(JSOP_NAMEDEC)
+@@ -1216,22 +1225,22 @@ BEGIN_CASE(JSOP_NAMEDEC)
                  PUSH_OPND(rtmp);
                  len = JSOP_INCNAME_LENGTH;
                  DO_NEXT_OP(len);
@@ -3779,14 +3793,14 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
  
 -    id = ATOM_TO_JSID(atom);
 -    if (!js_FindPropertyHelper(cx, id, true, &obj, &obj2, &prop))
-+    lcfp.construct(id = ATOM_TO_JSID(atom));
-+    if (!js_FindPropertyHelper(cx, id, true, &obj, lcfp.addr()))
++    JSFoundProperty found(id = ATOM_TO_JSID(atom));
++    if (!js_FindPropertyHelper(cx, id, true, &obj, &found))
          goto error;
 -    if (!prop)
-+    if (!lcfp.ref().wasFound())
++    if (!found.wasFound())
          goto atom_not_defined;
 -    obj2->dropProperty(cx, prop);
-+    lcfp.ref().drop(cx);
++    found.drop(cx);
  }
  
  do_incop:
@@ -3795,7 +3809,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      jsval v;
  
      /*
-@@ -1447,39 +1450,39 @@ BEGIN_CASE(JSOP_GETXPROP)
+@@ -1447,39 +1456,39 @@ BEGIN_CASE(JSOP_GETXPROP)
    do_getprop_body:
      lval = FETCH_OPND(-1);
  
@@ -3841,7 +3855,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
  
          id = ATOM_TO_JSID(atom);
          if (JS_LIKELY(aobj->map->ops->getProperty == js_GetProperty)
-@@ -1524,17 +1527,17 @@ BEGIN_CASE(JSOP_LENGTH)
+@@ -1524,17 +1533,17 @@ BEGIN_CASE(JSOP_LENGTH)
      } else {
          i = -2;
          goto do_getprop_with_lval;
@@ -3860,7 +3874,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      } else {
          JSProtoKey protoKey;
          if (JSVAL_IS_STRING(lval)) {
-@@ -1549,29 +1552,29 @@ BEGIN_CASE(JSOP_CALLPROP)
+@@ -1549,29 +1558,29 @@ BEGIN_CASE(JSOP_CALLPROP)
              goto error;
          }
          if (!js_GetClassPrototype(cx, NULL, protoKey, &obj))
@@ -3895,7 +3909,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
  
      /*
       * Cache miss: use the immediate atom that was loaded for us under
-@@ -1638,16 +1641,17 @@ BEGIN_CASE(JSOP_SETMETHOD)
+@@ -1638,16 +1647,17 @@ BEGIN_CASE(JSOP_SETMETHOD)
      JS_ASSERT_IF(op == JSOP_SETMETHOD, VALUE_IS_FUNCTION(cx, rval));
      lval = FETCH_OPND(-2);
      JS_ASSERT_IF(op == JSOP_SETNAME, !JSVAL_IS_PRIMITIVE(lval));
@@ -3913,7 +3927,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
           *
           *   function f(a, b, c) {
           *     var o = {p:a, q:b, r:c};
-@@ -1659,17 +1663,17 @@ BEGIN_CASE(JSOP_SETMETHOD)
+@@ -1659,17 +1669,17 @@ BEGIN_CASE(JSOP_SETMETHOD)
           * additions. And second:
           *
           *   o.p = x;
@@ -3932,7 +3946,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
               * The entry predicts either a new property to be added
               * directly to obj by this set, or on an existing "own"
               * property, or on a prototype property that has a setter.
-@@ -1686,19 +1690,19 @@ BEGIN_CASE(JSOP_SETMETHOD)
+@@ -1686,19 +1696,19 @@ BEGIN_CASE(JSOP_SETMETHOD)
               * Fastest path: check whether the cached sprop is already
               * in scope and call NATIVE_SET and break to get out of the
               * do-while(0). But we can call NATIVE_SET only if obj owns
@@ -3955,7 +3969,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
              } else if (!scope->isSharedEmpty()) {
                  if (sprop == scope->lastProperty() || scope->hasProperty(sprop)) {
                    fast_set_propcache_hit:
-@@ -1796,22 +1800,22 @@ BEGIN_CASE(JSOP_SETMETHOD)
+@@ -1796,22 +1806,22 @@ BEGIN_CASE(JSOP_SETMETHOD)
              }
              PCMETER(cache->setpcmisses++);
              atom = NULL;
@@ -3981,7 +3995,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
  
          if (!atom)
              LOAD_ATOM(0);
-@@ -1961,36 +1965,37 @@ BEGIN_CASE(JSOP_NEW)
+@@ -1961,36 +1971,37 @@ BEGIN_CASE(JSOP_NEW)
       * Assign lval, obj, and fun exactly as the code at inline_call: expects to
       * find them, to avoid nesting a js_Interpret call via js_InvokeConstructor.
       */
@@ -4023,7 +4037,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      if (!js_InvokeConstructor(cx, InvokeArgsGuard(vp, argc), JS_FALSE))
          goto error;
      regs.sp = vp + 1;
-@@ -2172,65 +2177,60 @@ BEGIN_CASE(JSOP_SETCALL)
+@@ -2172,65 +2183,59 @@ BEGIN_CASE(JSOP_SETCALL)
      if (js_Invoke(cx, InvokeArgsGuard(vp, argc), 0))
          JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_BAD_LEFTSIDE_OF_ASS);
      goto error;
@@ -4075,10 +4089,10 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
 +        JS_ASSERT(sprop);
 +        NATIVE_GET(cx, obj, pobj, sprop, JSGET_METHOD_BARRIER, &rval);
 +    } else {
-+        lcfp.construct(id = ATOM_TO_JSID(atom));
-+        if (!js_FindPropertyHelper(cx, id, true, &obj, lcfp.addr()))
++        JSFoundProperty found(id = ATOM_TO_JSID(atom));
++        if (!js_FindPropertyHelper(cx, id, true, &obj, &found))
 +            goto error;
-+        if (!lcfp.ref().wasFound()) {
++        if (!found.wasFound()) {
 +            /* Kludge to allow (typeof foo == "undefined") tests. */
 +            endpc = script->code + script->length;
 +            op2 = js_GetOpcode(cx, script, regs.pc + JSOP_NAME_LENGTH);
@@ -4097,15 +4111,14 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
 -        obj2->dropProperty(cx, prop);
 -        if (!obj->getProperty(cx, id, &rval))
 +
-+        if (!lcfp.ref().getValue(cx, &rval))
++        rval = OBJECT_TO_JSVAL(obj);
++        if (!found.getValue(cx, &rval))
              goto error;
 -    } else {
 -        sprop = (JSScopeProperty *)prop;
 -  do_native_get:
 -        NATIVE_GET(cx, obj, obj2, sprop, JSGET_METHOD_BARRIER, &rval);
 -        JS_UNLOCK_OBJ(cx, obj2);
-+
-+        lcfp.ref().unlock();
      }
  
    do_push_rval:
@@ -4114,7 +4127,19 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
          PUSH_OPND(OBJECT_TO_JSVAL(obj));
  }
  END_CASE(JSOP_NAME)
-@@ -2579,29 +2579,29 @@ BEGIN_CASE(JSOP_CALLUPVAR_DBG)
+@@ -2569,39 +2574,42 @@ BEGIN_CASE(JSOP_CALLUPVAR)
+ }
+ END_CASE(JSOP_GETUPVAR)
+ 
+ BEGIN_CASE(JSOP_GETUPVAR_DBG)
+ BEGIN_CASE(JSOP_CALLUPVAR_DBG)
+     fun = fp->fun;
+     JS_ASSERT(FUN_KIND(fun) == JSFUN_INTERPRETED);
+     JS_ASSERT(fun->u.i.wrapper);
++{
++    js::LazilyConstructed<JSFoundProperty> lcfp;
+ 
+     /* Scope for tempPool mark and local names allocation in it. */
      {
          void *mark = JS_ARENA_MARK(&cx->tempPool);
          jsuword *names = js_GetLocalNameArray(cx, fun, &cx->tempPool);
@@ -4135,12 +4160,13 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      }
  
 -    if (!prop)
-+    if (!lcfp.ref().wasFound())
++    if (lcfp.empty() || !lcfp.ref().wasFound())
          goto atom_not_defined;
  
      /* Minimize footprint with generic code instead of NATIVE_GET. */
 -    obj2->dropProperty(cx, prop);
 +    lcfp.ref().drop(cx);
++}
      vp = regs.sp;
      PUSH_OPND(JSVAL_NULL);
      if (!obj->getProperty(cx, id, vp))
@@ -4149,7 +4175,8 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      if (op == JSOP_CALLUPVAR_DBG)
          PUSH_OPND(JSVAL_NULL);
  END_CASE(JSOP_GETUPVAR_DBG)
-@@ -2691,74 +2691,72 @@ BEGIN_CASE(JSOP_DEFVAR)
+@@ -2690,75 +2698,74 @@ BEGIN_CASE(JSOP_DEFVAR)
+     obj = fp->varobj(cx);
      JS_ASSERT(obj->map->ops->defineProperty == js_DefineProperty);
      attrs = JSPROP_ENUMERATE;
      if (!(fp->flags & JSFRAME_EVAL))
@@ -4157,36 +4184,37 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      if (op == JSOP_DEFCONST)
          attrs |= JSPROP_READONLY;
  
-     /* Lookup id in order to check for redeclaration problems. */
+-    /* Lookup id in order to check for redeclaration problems. */
 -    id = ATOM_TO_JSID(atom);
 -    prop = NULL;
-+    lcfp.construct(id = ATOM_TO_JSID(atom));
++{   /* Lookup id in order to check for redeclaration problems. */
++    JSFoundProperty found(id = ATOM_TO_JSID(atom));
      if (op == JSOP_DEFVAR) {
          /*
           * Redundant declaration of a |var|, even one for a non-writable
           * property like |undefined| in ES5, does nothing.
           */
 -        if (!obj->lookupProperty(cx, id, &obj2, &prop))
-+        if (!obj->lookupProperty(cx, id, lcfp.addr()))
++        if (!obj->lookupProperty(cx, id, &found))
              goto error;
      } else {
 -        if (!js_CheckRedeclaration(cx, obj, id, attrs, &obj2, &prop))
-+        if (!js_CheckRedeclaration(cx, obj, id, attrs, lcfp.addr()))
++        if (!js_CheckRedeclaration(cx, obj, id, attrs, &found))
              goto error;
      }
  
      /* Bind a variable only if it's not yet defined. */
 -    if (!prop) {
-+    if (!lcfp.ref().wasFound()) {
++    if (!found.wasFound()) {
          if (!js_DefineNativeProperty(cx, obj, id, JSVAL_VOID, JS_PropertyStub, JS_PropertyStub,
 -                                     attrs, 0, 0, &prop)) {
-+                                     attrs, 0, 0, lcfp.addr())) {
++                                     attrs, 0, 0, &found)) {
              goto error;
          }
 -        JS_ASSERT(prop);
 -        obj2 = obj;
-+        JS_ASSERT(lcfp.ref().where() == obj);
-+        JS_ASSERT(lcfp.ref().wasFound());
++        JS_ASSERT(found.wasFound());
++        JS_ASSERT(found.where() == obj);
      }
  
      /*
@@ -4198,10 +4226,10 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      if (!fp->fun &&
          index < GlobalVarCount(fp) &&
 -        obj2 == obj &&
-+        lcfp.ref().where() == obj &&
++        found.where() == obj &&
          obj->isNative()) {
 -        sprop = (JSScopeProperty *) prop;
-+        sprop = lcfp.ref().sprop();
++        sprop = found.sprop();
          if (!sprop->configurable() &&
              SPROP_HAS_VALID_SLOT(sprop, obj->scope()) &&
              sprop->hasDefaultGetterOrIsMethod() &&
@@ -4217,7 +4245,8 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      }
  
 -    obj2->dropProperty(cx, prop);
-+    lcfp.ref().drop(cx);
++    found.drop(cx);
++}
  END_CASE(JSOP_DEFVAR)
  
  BEGIN_CASE(JSOP_DEFFUN)
@@ -4234,7 +4263,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
       * a compound statement (not at the top statement level of global code, or
       * at the top level of a function body).
       */
-@@ -2766,44 +2764,44 @@ BEGIN_CASE(JSOP_DEFFUN)
+@@ -2766,44 +2773,44 @@ BEGIN_CASE(JSOP_DEFFUN)
      obj = FUN_OBJECT(fun);
  
      if (FUN_NULL_CLOSURE(fun)) {
@@ -4285,7 +4314,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
       * Protect obj from any GC hiding below JSObject::setProperty or
       * JSObject::defineProperty.  All paths from here must flow through the
       * fp->scopeChain code below the parent->defineProperty call.
-@@ -2847,58 +2845,57 @@ BEGIN_CASE(JSOP_DEFFUN)
+@@ -2847,58 +2854,59 @@ BEGIN_CASE(JSOP_DEFFUN)
      parent = fp->varobj(cx);
      JS_ASSERT(parent);
  
@@ -4297,10 +4326,12 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
 -    id = ATOM_TO_JSID(fun->atom);
 -    prop = NULL;
 -    ok = js_CheckRedeclaration(cx, parent, id, attrs, &pobj, &prop);
-+    lcfp.construct(id = ATOM_TO_JSID(fun->atom));
-+    ok = js_CheckRedeclaration(cx, parent, id, attrs, lcfp.addr());
++do {
++    JSFoundProperty found(id = ATOM_TO_JSID(fun->atom));
++    ok = js_CheckRedeclaration(cx, parent, id, attrs, &found);
      if (!ok)
-         goto restore_scope;
+-        goto restore_scope;
++        break; // goto restore_scope;
  
      /*
       * We deviate from 10.1.2 in ECMA 262 v3 and under eval use for function
@@ -4317,11 +4348,11 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      JS_ASSERT_IF(doSet, fp->flags & JSFRAME_EVAL);
 -    if (prop) {
 -        if (parent == pobj &&
-+    if (lcfp.ref().wasFound()) {
-+        if (parent == lcfp.ref().where() &&
++    if (found.wasFound()) {
++        if (parent == found.where() &&
              parent->getClass() == &js_CallClass &&
 -            (old = ((JSScopeProperty *) prop)->attributes(),
-+            (old = (lcfp.ref().sprop())->attributes(),
++            (old = (found.sprop())->attributes(),
               !(old & (JSPROP_GETTER|JSPROP_SETTER)) &&
               (old & (JSPROP_ENUMERATE|JSPROP_PERMANENT)) == attrs)) {
              /*
@@ -4333,11 +4364,12 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
              doSet = JS_TRUE;
          }
 -        pobj->dropProperty(cx, prop);
-+        lcfp.ref().drop(cx);
++        found.drop(cx);
      }
      ok = doSet
           ? parent->setProperty(cx, id, &rval)
           : parent->defineProperty(cx, id, rval, getter, setter, attrs);
++ } while (0);
  
    restore_scope:
      /* Restore fp->scopeChain now that obj is defined in fp->callobj. */
@@ -4351,7 +4383,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
  BEGIN_CASE(JSOP_DEFFUN_FC)
  BEGIN_CASE(JSOP_DEFFUN_DBGFC)
      LOAD_FUNCTION(0);
-@@ -2919,17 +2916,17 @@ BEGIN_CASE(JSOP_DEFFUN_DBGFC)
+@@ -2919,17 +2927,17 @@ BEGIN_CASE(JSOP_DEFFUN_DBGFC)
          attrs |= flags | JSPROP_SHARED;
          rval = JSVAL_VOID;
      }
@@ -4370,7 +4402,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
              JS_ASSERT(attrs & JSPROP_PERMANENT);
  
              ok = parent->defineProperty(cx, id, rval,
-@@ -3029,27 +3026,28 @@ BEGIN_CASE(JSOP_LAMBDA)
+@@ -3029,27 +3037,28 @@ BEGIN_CASE(JSOP_LAMBDA)
                   */
                  if (op == JSOP_SETMETHOD) {
  #ifdef DEBUG
@@ -4404,7 +4436,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
              if (!parent)
                  goto error;
          }
-@@ -3166,17 +3164,17 @@ BEGIN_CASE(JSOP_SETTER)
+@@ -3166,17 +3175,17 @@ BEGIN_CASE(JSOP_SETTER)
      } else {
          getter = JS_PropertyStub;
          setter = CastAsPropertyOp(JSVAL_TO_OBJECT(rval));
@@ -4423,7 +4455,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
      regs.sp += i;
      if (js_CodeSpec[op2].ndefs > js_CodeSpec[op2].nuses) {
          JS_ASSERT(js_CodeSpec[op2].ndefs == js_CodeSpec[op2].nuses + 1);
-@@ -3310,18 +3308,17 @@ BEGIN_CASE(JSOP_INITMETHOD)
+@@ -3310,18 +3319,17 @@ BEGIN_CASE(JSOP_INITMETHOD)
      } else {
          PCMETER(JS_PROPERTY_CACHE(cx).inipcmisses++);
  
@@ -4443,7 +4475,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
                            : JSDNP_CACHE_RESULT;
          if (!(JS_UNLIKELY(atom == cx->runtime->atomState.protoAtom)
                ? js_SetPropertyHelper(cx, obj, id, defineHow, &rval)
-@@ -3349,17 +3346,17 @@ BEGIN_CASE(JSOP_INITELEM)
+@@ -3349,17 +3357,17 @@ BEGIN_CASE(JSOP_INITELEM)
  
      /* Fetch id now that we have obj. */
      FETCH_ELEMENT_ID(obj, -2, id);
@@ -4462,7 +4494,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
       * initialiser, set the array length to one greater than id.
       */
      if (rval == JSVAL_HOLE) {
-@@ -3843,26 +3840,28 @@ BEGIN_CASE(JSOP_ENTERBLOCK)
+@@ -3843,26 +3851,28 @@ BEGIN_CASE(JSOP_ENTERBLOCK)
  
      /*
       * The young end of fp->scopeChain may omit blocks if we haven't closed
@@ -4969,7 +5001,7 @@ diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
      TypedArray *tarray = fromJSObject(obj);
      JS_ASSERT(tarray);
  
-@@ -525,38 +524,30 @@ class TypedArrayTemplate
+@@ -525,37 +524,31 @@ class TypedArrayTemplate
              return true;
          }
  
@@ -5002,9 +5034,10 @@ diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
 -                        return false;
 -                    JS_UNLOCK_OBJ(cx, obj2);
 -                }
--            }
-+            if (found.wasFound())
++            if (found.wasFound()) {
++                *vp = OBJECT_TO_JSVAL(proto);
 +                return found.getValue(cx, vp);
+             }
          }
  
          return true;
@@ -5012,7 +5045,6 @@ diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
  
      static JSBool
      obj_setProperty(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
-     {
 diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
 --- a/js/src/jstypedarray.h
 +++ b/js/src/jstypedarray.h
