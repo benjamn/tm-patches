@@ -1,0 +1,241 @@
+# HG changeset patch
+# Parent 28e292efc54342ae38cc9af0cfa4630a22644404
+
+diff --git a/js/src/Makefile.in b/js/src/Makefile.in
+--- a/js/src/Makefile.in
++++ b/js/src/Makefile.in
+@@ -235,16 +235,17 @@ INSTALLED_HEADERS = \
+ 		jsvector.h \
+ 		jstl.h \
+ 		jshashtable.h \
+ 		jsversion.h \
+ 		jswrapper.h \
+ 		jsxdrapi.h \
+ 		jsxml.h \
+ 		prmjtime.h \
++		jsfoundprop.h \
+ 		$(NULL)
+ 
+ ifdef ENABLE_TRACEJIT
+ VPATH		+= $(srcdir)/nanojit
+ 
+ INSTALLED_HEADERS += \
+ 		jsbuiltins.h    \
+ 		Assembler.h     \
+diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
+new file mode 100644
+--- /dev/null
++++ b/js/src/jsfoundprop.h
+@@ -0,0 +1,176 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
++ * vim: set ts=8 sw=4 et tw=99 ft=cpp:
++ *
++ * ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Mozilla SpiderMonkey JavaScript 1.9 code, released
++ * July 16, 2009.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Corporation.
++ *
++ * Contributor(s):
++ *   Ben Newman <mozilla@benjamn.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either of the GNU General Public License Version 2 or later (the "GPL"),
++ * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef jsfoundprop_h_
++#define jsfoundprop_h_
++
++#include "jsapi.h"
++#include "jsobj.h"
++#include "jsscope.h"
++
++namespace js {
++
++class FoundProperty
++{
++    const jsid mId;
++    JSContext *mLockCx;
++    JSObject *mWhere;
++    JSProperty *mProp;
++
++    bool isNative() const { return wasFound() && mWhere->isNative(); }
++
++    void assertInvariants(JSContext *cx) const {
++        JS_ASSERT(!mProp || mWhere);
++        JS_ASSERT(!mWhere || !isNative() || !mLockCx ||
++                  JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
++        if (mLockCx) {
++            JS_ASSERT(isNative());
++            JS_ASSERT(mWhere->scope());
++            JS_ASSERT(JS_IS_SCOPE_LOCKED(mLockCx, mWhere->scope()));
++            JS_ASSERT(CX_OWNS_SCOPE_TITLE(mLockCx, mWhere->scope()));
++        } else if (isNative()) {
++            /*
++             * Intuitively, these assertions should correlate with
++             * !mLockCx && isNative(), but JS_UNLOCK_OBJ doesn't appear to
++             * effect these conditions.
++             */
++            //JS_ASSERT(!JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
++            //JS_ASSERT(!CX_OWNS_SCOPE_TITLE(mLockCx, mWhere->scope()));
++        }
++    }
++
++public:
++
++    bool wasFound() const { return !!mWhere; }
++    bool inScope() const { return isNative() && mProp; }
++
++    FoundProperty(jsid id)
++        : mId(id)
++        , mLockCx(NULL)
++        , mWhere(NULL)
++        , mProp(NULL)
++    {}
++
++    ~FoundProperty() { unlock(); }
++
++    void setWithId(JSContext *cx,
++                   JSObject *where,
++                   jsid id)
++    {
++        JS_ASSERT(cx);
++        JS_ASSERT(where);
++        JS_ASSERT(mId == id);
++
++        assertInvariants(cx);
++
++        unlock();
++
++        mWhere = where;
++        mProp = (JSProperty*)id;
++        mLockCx = isNative() ? cx : NULL;
++
++        assertInvariants(cx);
++    }
++
++    void setWithSProp(JSContext *cx,
++                      JSObject *where,
++                      JSScopeProperty *sprop)
++    {
++        JS_ASSERT(cx);
++
++        assertInvariants(mLockCx);
++
++        unlock();
++
++        mWhere = where;
++        mProp = (JSProperty*)sprop;
++        mLockCx = isNative() ? cx : NULL;
++
++        assertInvariants(cx);
++    }
++
++    void unlock() {
++        if (mLockCx) {
++            JS_UNLOCK_OBJ(mLockCx, mWhere);
++            mLockCx = NULL;
++        }
++    }
++
++    void drop(JSContext *cx) {
++        assertInvariants(cx);
++        if (inScope()) {
++            unlock(); // dropProperty unlocks, so unlock first
++            mWhere->dropProperty(cx, mProp);
++            assertInvariants(cx);
++        }
++    }
++
++    void clear() {
++        unlock();
++        mWhere = NULL;
++        mProp = NULL;
++    }
++
++    FoundProperty &operator=(const FoundProperty &other) {
++        if (this != &other) {
++            JS_ASSERT(mId == other.mId);
++            mWhere = other.mWhere;
++            mProp = other.mProp;
++        }
++        return *this;
++    }
++
++    jsid id() const { return mId; }
++
++    JSObject *where(bool nullOk = false) const {
++        JS_ASSERT(nullOk || wasFound());
++        return mWhere;
++    }
++
++    JSScopeProperty *sprop() const {
++        JS_ASSERT(inScope());
++        JS_ASSERT(!mWhere->isDenseArray());
++        return (JSScopeProperty*)mProp;
++    }
++
++};
++  
++} /* namespace js { */
++
++#endif /* #ifndef jsfoundprop_h_ */
+diff --git a/js/src/jsprvtd.h b/js/src/jsprvtd.h
+--- a/js/src/jsprvtd.h
++++ b/js/src/jsprvtd.h
+@@ -193,23 +193,31 @@ class PropertyCache;
+ struct PropertyCacheEntry;
+ 
+ static inline JSPropertyOp
+ CastAsPropertyOp(JSObject *object)
+ {
+     return JS_DATA_TO_FUNC_PTR(JSPropertyOp, object);
+ }
+ 
++class FoundProperty;
++
+ } /* namespace js */
+ 
+ /* Common instantiations. */
+ typedef js::Vector<jschar, 32> JSCharBuffer;
++typedef js::FoundProperty JSFoundProperty;
+ 
+ } /* export "C++" */
+-#endif  /* __cplusplus */
++#else  /* __cplusplus */
++
++/* JSFoundProperty won't be used from C. */
++typedef void JSFoundProperty;
++
++#endif /* __cplusplus */
+ 
+ /* "Friend" types used by jscntxt.h and jsdbgapi.h. */
+ typedef enum JSTrapStatus {
+     JSTRAP_ERROR,
+     JSTRAP_CONTINUE,
+     JSTRAP_RETURN,
+     JSTRAP_THROW,
+     JSTRAP_LIMIT
