@@ -581,6 +581,58 @@ diff --git a/js/src/jsarray.h b/js/src/jsarray.h
  /*
   * Friend api function that allows direct creation of an array object with a
   * given capacity.  Non-null return value means allocation of the internal
+diff --git a/js/src/jsbuiltins.cpp b/js/src/jsbuiltins.cpp
+--- a/js/src/jsbuiltins.cpp
++++ b/js/src/jsbuiltins.cpp
+@@ -54,16 +54,17 @@
+ #include "jsnum.h"
+ #include "prmjtime.h"
+ #include "jsdate.h"
+ #include "jsscope.h"
+ #include "jsstr.h"
+ #include "jsbuiltins.h"
+ #include "jstracer.h"
+ #include "jsvector.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsatominlines.h"
+ #include "jsobjinlines.h"
+ #include "jsscopeinlines.h"
+ #include "jscntxtinlines.h"
+ 
+ using namespace avmplus;
+ using namespace nanojit;
+@@ -271,23 +272,24 @@ HasProperty(JSContext* cx, JSObject* obj
+     for (JSObject* pobj = obj; pobj; pobj = pobj->getProto()) {
+         if (pobj->map->ops->lookupProperty != js_LookupProperty)
+             return JSVAL_TO_SPECIAL(JSVAL_VOID);
+         JSClass* clasp = pobj->getClass();
+         if (clasp->resolve != JS_ResolveStub && clasp != &js_StringClass)
+             return JSVAL_TO_SPECIAL(JSVAL_VOID);
+     }
+ 
+-    JSObject* obj2;
+-    JSProperty* prop;
+-    if (js_LookupPropertyWithFlags(cx, obj, id, JSRESOLVE_QUALIFIED, &obj2, &prop) < 0)
++    JSFoundProperty found(id);
++    if (js_LookupPropertyWithFlags(cx, obj, id, JSRESOLVE_QUALIFIED, &found) < 0)
+         return JSVAL_TO_SPECIAL(JSVAL_VOID);
+-    if (prop)
+-        obj2->dropProperty(cx, prop);
+-    return prop != NULL;
++    if (found.wasFound()) {
++        found.drop(cx);
++        return JS_TRUE;
++    }
++    return JS_FALSE;
+ }
+ 
+ JSBool FASTCALL
+ js_HasNamedProperty(JSContext* cx, JSObject* obj, JSString* idstr)
+ {
+     jsid id;
+     if (!js_ValueToStringId(cx, STRING_TO_JSVAL(idstr), &id))
+         return JSVAL_TO_BOOLEAN(JSVAL_VOID);
 diff --git a/js/src/jsdbgapi.cpp b/js/src/jsdbgapi.cpp
 --- a/js/src/jsdbgapi.cpp
 +++ b/js/src/jsdbgapi.cpp
@@ -4705,3 +4757,104 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
      } while ((obj = obj->getParent()) != NULL);
  
      printable = js_ValueToPrintableString(cx, OBJECT_TO_JSVAL(nameobj));
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -68,16 +68,17 @@
+ #include "jslock.h"
+ #include "jsnum.h"
+ #include "jsobj.h"
+ #include "jsparse.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jstracer.h"
+ #include "jsxml.h"
++#include "jsfoundprop.h"
+ 
+ #include "prmjtime.h"
+ 
+ #ifdef JSDEBUGGER
+ #include "jsdebug.h"
+ #ifdef JSDEBUGGER_JAVA_UI
+ #include "jsdjava.h"
+ #endif /* JSDEBUGGER_JAVA_UI */
+@@ -2011,18 +2012,16 @@ DumpScope(JSContext *cx, JSObject *obj, 
+ 
+ static JSBool
+ DumpStats(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+ {
+     uintN i;
+     JSString *str;
+     const char *bytes;
+     jsid id;
+-    JSObject *obj2;
+-    JSProperty *prop;
+     jsval value;
+ 
+     for (i = 0; i < argc; i++) {
+         str = JS_ValueToString(cx, argv[i]);
+         if (!str)
+             return JS_FALSE;
+         argv[i] = STRING_TO_JSVAL(str);
+         bytes = JS_GetStringBytes(str);
+@@ -2032,24 +2031,26 @@ DumpStats(JSContext *cx, JSObject *obj, 
+ #endif
+         } else if (strcmp(bytes, "atom") == 0) {
+             js_DumpAtoms(cx, gOutFile);
+         } else if (strcmp(bytes, "global") == 0) {
+             DumpScope(cx, cx->globalObject, stdout);
+         } else {
+             if (!JS_ValueToId(cx, STRING_TO_JSVAL(str), &id))
+                 return JS_FALSE;
+-            if (!js_FindProperty(cx, id, &obj, &obj2, &prop))
++            JSFoundProperty found(id);
++            if (!js_FindProperty(cx, id, &obj, &found))
+                 return JS_FALSE;
+-            if (prop) {
+-                obj2->dropProperty(cx, prop);
++            JSBool wasFound = found.wasFound();
++            if (wasFound) {
++                found.drop(cx);
+                 if (!obj->getProperty(cx, id, &value))
+                     return JS_FALSE;
+             }
+-            if (!prop || !JSVAL_IS_OBJECT(value)) {
++            if (!wasFound || !JSVAL_IS_OBJECT(value)) {
+                 fprintf(gErrFile, "js: invalid stats argument %s\n",
+                         bytes);
+                 continue;
+             }
+             obj = JSVAL_TO_OBJECT(value);
+             if (obj)
+                 DumpScope(cx, obj, stdout);
+         }
+@@ -2669,25 +2670,24 @@ split_resolve(JSContext *cx, JSObject *o
+                                  JSPROP_SHARED);
+     }
+ 
+     cpx = split_get_private(cx, obj);
+     if (!cpx)
+         return JS_TRUE;
+     if (!cpx->isInner && cpx->inner) {
+         jsid asId;
+-        JSProperty *prop;
+-
+         if (!JS_ValueToId(cx, id, &asId))
+             return JS_FALSE;
+ 
+-        if (!cpx->inner->lookupProperty(cx, asId, objp, &prop))
++        JSFoundProperty found(asId);
++        if (!cpx->inner->lookupProperty(cx, asId, &found))
+             return JS_FALSE;
+-        if (prop)
+-            cpx->inner->dropProperty(cx, prop);
++        *objp = found.where(true);
++        found.drop(cx);
+ 
+         return JS_TRUE;
+     }
+ 
+ #ifdef LAZY_STANDARD_CLASSES
+     if (!(flags & JSRESOLVE_ASSIGNING)) {
+         JSBool resolved;
+ 
