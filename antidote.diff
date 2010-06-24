@@ -1,0 +1,525 @@
+# HG changeset patch
+# Parent 3e0ad243b510474a5c51d49b70a826713a744e83
+
+diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
+--- a/js/src/jsapi.cpp
++++ b/js/src/jsapi.cpp
+@@ -82,16 +82,17 @@
+ #include "jsstr.h"
+ #include "jstask.h"
+ #include "jstracer.h"
+ #include "jsdbgapi.h"
+ #include "prmjtime.h"
+ #include "jsstaticcheck.h"
+ #include "jsvector.h"
+ #include "jstypedarray.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsatominlines.h"
+ #include "jscntxtinlines.h"
+ #include "jsscopeinlines.h"
+ #include "jsobjinlines.h"
+ 
+ #if JS_HAS_XML_SUPPORT
+ #include "jsxml.h"
+@@ -2998,68 +2999,66 @@ JS_ConstructObjectWithArguments(JSContex
+     assertSameCompartment(cx, proto, parent, ValueArray(argv, argc));
+     if (!clasp)
+         clasp = &js_ObjectClass;    /* default class is Object */
+     return js_ConstructObject(cx, clasp, proto, parent, argc, argv);
+ }
+ 
+ static JSBool
+ LookupPropertyById(JSContext *cx, JSObject *obj, jsid id, uintN flags,
+-                   JSObject **objp, JSProperty **propp)
++                   JSFoundProperty *found)
+ {
+     CHECK_REQUEST(cx);
+     assertSameCompartment(cx, obj, id);
+ 
+     JSAutoResolveFlags rf(cx, flags);
+     id = js_CheckForStringIndex(id);
+-    return obj->lookupProperty(cx, id, objp, propp);
++    return obj->lookupProperty(cx, id, found);
+ }
+ 
+ #define AUTO_NAMELEN(s,n)   (((n) == (size_t)-1) ? js_strlen(s) : (n))
+ 
+ static JSBool
+-LookupResult(JSContext *cx, JSObject *obj, JSObject *obj2, JSProperty *prop, jsval *vp)
+-{
+-    if (!prop) {
++LookupResult(JSContext *cx, JSObject *obj, JSFoundProperty *found, jsval *vp)
++{
++    if (!found->wasFound()) {
+         /* XXX bad API: no way to tell "not defined" from "void value" */
+         *vp = JSVAL_VOID;
+         return JS_TRUE;
+     }
+ 
+-    if (obj2->isNative()) {
+-        JSScopeProperty *sprop = (JSScopeProperty *) prop;
++    if (found->inScope()) {
++        JSScopeProperty *sprop = found->sprop();
+ 
+         if (sprop->isMethod()) {
+             AutoScopePropertyRooter root(cx, sprop);
+-            JS_UNLOCK_OBJ(cx, obj2);
++            found->unlock();
+             *vp = sprop->methodValue();
+-            return obj2->scope()->methodReadBarrier(cx, sprop, vp);
++            return found->scope()->methodReadBarrier(cx, sprop, vp);
+         }
+ 
+         /* Peek at the native property's slot value, without doing a Get. */
+-        *vp = SPROP_HAS_VALID_SLOT(sprop, obj2->scope())
+-               ? obj2->lockedGetSlot(sprop->slot)
+-               : JSVAL_TRUE;
+-        JS_UNLOCK_OBJ(cx, obj2);
+-    } else if (obj2->isDenseArray()) {
+-        return js_GetDenseArrayElementValue(cx, obj2, prop, vp);
++        *vp = SPROP_HAS_VALID_SLOT(sprop, found->scope())
++              ? found->where()->lockedGetSlot(sprop->slot)
++              : JSVAL_TRUE;
++    } else if (found->where()->isDenseArray()) {
++        return js_GetDenseArrayElementValue(cx, found->where(), found->id(), vp);
+     } else {
+         /* XXX bad API: no way to return "defined but value unknown" */
+         *vp = JSVAL_TRUE;
+     }
+     return true;
+ }
+ 
+ JS_PUBLIC_API(JSBool)
+ JS_LookupPropertyById(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
+ {
+-    JSObject *obj2;
+-    JSProperty *prop;
+-    return LookupPropertyById(cx, obj, id, JSRESOLVE_QUALIFIED, &obj2, &prop) &&
+-           LookupResult(cx, obj, obj2, prop, vp);
++    JSFoundProperty found(id);
++    return LookupPropertyById(cx, obj, id, JSRESOLVE_QUALIFIED, &found) &&
++           LookupResult(cx, obj, &found, vp);
+ }
+ 
+ JS_PUBLIC_API(JSBool)
+ JS_LookupElement(JSContext *cx, JSObject *obj, jsint index, jsval *vp)
+ {
+     return JS_LookupPropertyById(cx, obj, INT_TO_JSID(index), vp);
+ }
+ 
+@@ -3077,51 +3076,46 @@ JS_LookupUCProperty(JSContext *cx, JSObj
+     return atom && JS_LookupPropertyById(cx, obj, ATOM_TO_JSID(atom), vp);
+ }
+ 
+ JS_PUBLIC_API(JSBool)
+ JS_LookupPropertyWithFlagsById(JSContext *cx, JSObject *obj, jsid id, uintN flags,
+                                JSObject **objp, jsval *vp)
+ {
+     JSBool ok;
+-    JSProperty *prop;
+ 
+     CHECK_REQUEST(cx);
+     assertSameCompartment(cx, obj, id);
++    JSFoundProperty found(id);
+     ok = obj->isNative()
+-         ? js_LookupPropertyWithFlags(cx, obj, id, flags, objp, &prop) >= 0
+-         : obj->lookupProperty(cx, id, objp, &prop);
+-    return ok && LookupResult(cx, obj, *objp, prop, vp);
++         ? js_LookupPropertyWithFlags(cx, obj, id, flags, &found) >= 0
++         : obj->lookupProperty(cx, id, &found);
++    *objp = found.where(true);
++    return ok && LookupResult(cx, obj, &found, vp);
+ }
+ 
+ JS_PUBLIC_API(JSBool)
+ JS_LookupPropertyWithFlags(JSContext *cx, JSObject *obj, const char *name, uintN flags, jsval *vp)
+ {
+     JSObject *obj2;
+     JSAtom *atom = js_Atomize(cx, name, strlen(name), 0);
+     return atom && JS_LookupPropertyWithFlagsById(cx, obj, ATOM_TO_JSID(atom), flags, &obj2, vp);
+ }
+ 
+-static JSBool
+-HasPropertyResult(JSContext *cx, JSObject *obj2, JSProperty *prop, JSBool *foundp)
+-{
+-    *foundp = (prop != NULL);
+-    if (prop)
+-        obj2->dropProperty(cx, prop);
+-    return true;
+-}
+-
+ JS_PUBLIC_API(JSBool)
+ JS_HasPropertyById(JSContext *cx, JSObject *obj, jsid id, JSBool *foundp)
+ {
+-    JSObject *obj2;
+-    JSProperty *prop;
+-    return LookupPropertyById(cx, obj, id, JSRESOLVE_QUALIFIED | JSRESOLVE_DETECTING,
+-                              &obj2, &prop) &&
+-           HasPropertyResult(cx, obj2, prop, foundp);
++    JSFoundProperty fp(id);
++    if (LookupPropertyById(cx, obj, id,
++                           JSRESOLVE_QUALIFIED | JSRESOLVE_DETECTING, &fp)) {
++        *foundp = fp.wasFound();
++        fp.drop(cx);
++        return true;
++    }
++    return false;
+ }
+ 
+ JS_PUBLIC_API(JSBool)
+ JS_HasElement(JSContext *cx, JSObject *obj, jsint index, JSBool *foundp)
+ {
+     return JS_HasPropertyById(cx, obj, INT_TO_JSID(index), foundp);
+ }
+ 
+@@ -3141,26 +3135,24 @@ JS_HasUCProperty(JSContext *cx, JSObject
+ 
+ JS_PUBLIC_API(JSBool)
+ JS_AlreadyHasOwnPropertyById(JSContext *cx, JSObject *obj, jsid id, JSBool *foundp)
+ {
+     CHECK_REQUEST(cx);
+     assertSameCompartment(cx, obj, id);
+ 
+     if (!obj->isNative()) {
+-        JSObject *obj2;
+-        JSProperty *prop;
++        JSFoundProperty fp(id);
+ 
+         if (!LookupPropertyById(cx, obj, id, JSRESOLVE_QUALIFIED | JSRESOLVE_DETECTING,
+-                                &obj2, &prop)) {
++                                &fp)) {
+             return JS_FALSE;
+         }
+-        *foundp = (obj == obj2);
+-        if (prop)
+-            obj2->dropProperty(cx, prop);
++        *foundp = fp.wasFound();
++        fp.drop(cx);
+         return JS_TRUE;
+     }
+ 
+     JS_LOCK_OBJ(cx, obj);
+     JSScope *scope = obj->scope();
+     *foundp = scope->hasProperty(id);
+     JS_UNLOCK_SCOPE(cx, scope);
+     return JS_TRUE;
+@@ -3345,138 +3337,130 @@ JS_DefineProperties(JSContext *cx, JSObj
+             break;
+     }
+     return ok;
+ }
+ 
+ JS_PUBLIC_API(JSBool)
+ JS_AliasProperty(JSContext *cx, JSObject *obj, const char *name, const char *alias)
+ {
+-    JSObject *obj2;
+-    JSProperty *prop;
+     JSBool ok;
+-    JSScopeProperty *sprop;
+ 
+     CHECK_REQUEST(cx);
+     assertSameCompartment(cx, obj);
+ 
+     JSAtom *atom = js_Atomize(cx, name, strlen(name), 0);
+     if (!atom)
+         return JS_FALSE;
+-    if (!LookupPropertyById(cx, obj, ATOM_TO_JSID(atom), JSRESOLVE_QUALIFIED, &obj2, &prop))
++    JSFoundProperty found(ATOM_TO_JSID(atom));
++    if (!LookupPropertyById(cx, obj, found.id(), JSRESOLVE_QUALIFIED, &found))
+         return JS_FALSE;
+-    if (!prop) {
++    if (!found.wasFound()) {
+         js_ReportIsNotDefined(cx, name);
+         return JS_FALSE;
+     }
+-    if (obj2 != obj || !obj->isNative()) {
+-        obj2->dropProperty(cx, prop);
++    if (found.where() != obj || !found.inScope()) {
++        found.drop(cx);
+         JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_CANT_ALIAS,
+-                             alias, name, obj2->getClass()->name);
++                             alias, name, found.where()->getClass()->name);
+         return JS_FALSE;
+     }
+     atom = js_Atomize(cx, alias, strlen(alias), 0);
+     if (!atom) {
+         ok = JS_FALSE;
+     } else {
+-        sprop = (JSScopeProperty *)prop;
++        JSScopeProperty *sprop = found.sprop();
+         ok = (js_AddNativeProperty(cx, obj, ATOM_TO_JSID(atom),
+                                    sprop->getter(), sprop->setter(), sprop->slot,
+                                    sprop->attributes(), sprop->getFlags() | JSScopeProperty::ALIAS,
+                                    sprop->shortid)
+               != NULL);
+     }
+     JS_UNLOCK_OBJ(cx, obj);
+     return ok;
+ }
+ 
+ JS_PUBLIC_API(JSBool)
+ JS_AliasElement(JSContext *cx, JSObject *obj, const char *name, jsint alias)
+ {
+-    JSObject *obj2;
+-    JSProperty *prop;
+-    JSScopeProperty *sprop;
+     JSBool ok;
+ 
+     CHECK_REQUEST(cx);
+     assertSameCompartment(cx, obj);
+ 
+     JSAtom *atom = js_Atomize(cx, name, strlen(name), 0);
+     if (!atom)
+         return JS_FALSE;
+-    if (!LookupPropertyById(cx, obj, ATOM_TO_JSID(atom), JSRESOLVE_QUALIFIED, &obj2, &prop))
++    JSFoundProperty found(ATOM_TO_JSID(atom));
++    if (!LookupPropertyById(cx, obj, found.id(), JSRESOLVE_QUALIFIED, &found))
+         return JS_FALSE;
+-    if (!prop) {
++    if (!found.wasFound()) {
+         js_ReportIsNotDefined(cx, name);
+         return JS_FALSE;
+     }
+-    if (obj2 != obj || !obj->isNative()) {
++    if (found.where() != obj || !found.inScope()) {
+         char numBuf[12];
+-        obj2->dropProperty(cx, prop);
++        found.drop(cx);
+         JS_snprintf(numBuf, sizeof numBuf, "%ld", (long)alias);
+         JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_CANT_ALIAS,
+-                             numBuf, name, obj2->getClass()->name);
++                             numBuf, name, found.where()->getClass()->name);
+         return JS_FALSE;
+     }
+-    sprop = (JSScopeProperty *)prop;
++    JSScopeProperty *sprop = found.sprop();
+     ok = (js_AddNativeProperty(cx, obj, INT_TO_JSID(alias),
+                                sprop->getter(), sprop->setter(), sprop->slot,
+                                sprop->attributes(), sprop->getFlags() | JSScopeProperty::ALIAS,
+                                sprop->shortid)
+           != NULL);
+     JS_UNLOCK_OBJ(cx, obj);
+     return ok;
+ }
+ 
+ static JSBool
+ GetPropertyDescriptorById(JSContext *cx, JSObject *obj, jsid id, uintN flags,
+                           JSBool own, JSPropertyDescriptor *desc)
+ {
+-    JSObject *obj2;
+-    JSProperty *prop;
+-
+-    if (!LookupPropertyById(cx, obj, id, flags, &obj2, &prop))
++    JSFoundProperty found(id);
++    if (!LookupPropertyById(cx, obj, id, flags, &found))
+         return JS_FALSE;
+ 
+-    if (!prop || (own && obj != obj2)) {
++    if (!found.wasFound() || (own && obj != found.where())) {
+         desc->obj = NULL;
+         desc->attrs = 0;
+         desc->getter = NULL;
+         desc->setter = NULL;
+         desc->value = JSVAL_VOID;
+-        if (prop)
+-            obj2->dropProperty(cx, prop);
++        found.drop(cx);
+         return JS_TRUE;
+     }
+ 
+-    desc->obj = obj2;
+-    if (obj2->isNative()) {
+-        JSScopeProperty *sprop = (JSScopeProperty *) prop;
++    desc->obj = found.where();
++    if (found.inScope()) {
++        JSScopeProperty *sprop = found.sprop();
+         desc->attrs = sprop->attributes();
+ 
+         if (sprop->isMethod()) {
+             desc->getter = desc->setter = JS_PropertyStub;
+             desc->value = sprop->methodValue();
+         } else {
+             desc->getter = sprop->getter();
+             desc->setter = sprop->setter();
+-            desc->value = SPROP_HAS_VALID_SLOT(sprop, obj2->scope())
+-                          ? obj2->lockedGetSlot(sprop->slot)
++            desc->value = SPROP_HAS_VALID_SLOT(sprop, found.scope())
++                          ? found.where()->lockedGetSlot(sprop->slot)
+                           : JSVAL_VOID;
+         }
+-        JS_UNLOCK_OBJ(cx, obj2);
+-    } else if (obj2->isProxy()) {
+-        JS_ASSERT(obj == obj2);
++    } else if (found.where()->isProxy()) {
++        JS_ASSERT(obj == found.where());
+ 
+         JSAutoResolveFlags rf(cx, flags);
+         return own
+             ? JSProxy::getOwnPropertyDescriptor(cx, obj, id, desc)
+             : JSProxy::getPropertyDescriptor(cx, obj, id, desc);
+     } else {
+-        if (!obj2->getAttributes(cx, id, &desc->attrs))
++        if (!found.where()->getAttributes(cx, id, &desc->attrs))
+             return false;
+         desc->getter = NULL;
+         desc->setter = NULL;
+         desc->value = JSVAL_VOID;
+     }
+     return true;
+ }
+ 
+@@ -3549,29 +3533,27 @@ JS_GetOwnPropertyDescriptor(JSContext *c
+ {
+     CHECK_REQUEST(cx);
+     return js_GetOwnPropertyDescriptor(cx, obj, id, vp);
+ }
+ 
+ static JSBool
+ SetPropertyAttributesById(JSContext *cx, JSObject *obj, jsid id, uintN attrs, JSBool *foundp)
+ {
+-    JSObject *obj2;
+-    JSProperty *prop;
+-
+-    if (!LookupPropertyById(cx, obj, id, JSRESOLVE_QUALIFIED, &obj2, &prop))
++    JSFoundProperty fp(id);
++
++    if (!LookupPropertyById(cx, obj, id, JSRESOLVE_QUALIFIED, &fp))
+         return false;
+-    if (!prop || obj != obj2) {
++    if (!fp.wasFound() || obj != fp.where()) {
+         *foundp = false;
+-        if (prop)
+-            obj2->dropProperty(cx, prop);
++        fp.drop(cx);
+         return true;
+     }
+-    JSBool ok = obj->isNative()
+-                ? js_SetNativeAttributes(cx, obj, (JSScopeProperty *) prop, attrs)
++    JSBool ok = fp.inScope()
++                ? js_SetNativeAttributes(cx, obj, fp.sprop(), attrs)
+                 : obj->setAttributes(cx, id, &attrs);
+     if (ok)
+         *foundp = true;
+     return ok;
+ }
+ 
+ JS_PUBLIC_API(JSBool)
+ JS_SetPropertyAttributes(JSContext *cx, JSObject *obj, const char *name,
+diff --git a/js/src/jsarray.cpp b/js/src/jsarray.cpp
+--- a/js/src/jsarray.cpp
++++ b/js/src/jsarray.cpp
+@@ -742,20 +742,18 @@ array_lookupProperty(JSContext *cx, JSOb
+         *objp = NULL;
+         *propp = NULL;
+         return JS_TRUE;
+     }
+     return proto->lookupProperty(cx, id, objp, propp);
+ }
+ 
+ JSBool
+-js_GetDenseArrayElementValue(JSContext *cx, JSObject *obj, JSProperty *prop,
+-                             jsval *vp)
++js_GetDenseArrayElementValue(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
+ {
+-    jsid id = (jsid) prop;
+     JS_ASSERT(IsDenseArrayId(cx, obj, id));
+ 
+     uint32 i;
+     if (!js_IdIsIndex(id, &i)) {
+         JS_ASSERT(id == ATOM_TO_JSID(cx->runtime->atomState.lengthAtom));
+         return IndexToValue(cx, obj->getArrayLength(), vp);
+     }
+     *vp = obj->getDenseArrayElement(i);
+diff --git a/js/src/jsarray.h b/js/src/jsarray.h
+--- a/js/src/jsarray.h
++++ b/js/src/jsarray.h
+@@ -187,18 +187,17 @@ js_CoerceArrayToCanvasImageData(JSObject
+ 
+ JSBool
+ js_PrototypeHasIndexedProperties(JSContext *cx, JSObject *obj);
+ 
+ /*
+  * Utility to access the value from the id returned by array_lookupProperty.
+  */
+ JSBool
+-js_GetDenseArrayElementValue(JSContext *cx, JSObject *obj, JSProperty *prop,
+-                             jsval *vp);
++js_GetDenseArrayElementValue(JSContext *cx, JSObject *obj, jsid id, jsval *vp);
+ 
+ /* Array constructor native. Exposed only so the JIT can know its address. */
+ JSBool
+ js_Array(JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval);
+ 
+ /*
+  * Friend api function that allows direct creation of an array object with a
+  * given capacity.  Non-null return value means allocation of the internal
+diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
+--- a/js/src/jsobj.cpp
++++ b/js/src/jsobj.cpp
+@@ -4284,18 +4284,17 @@ js_DefineNativeProperty(JSContext *cx, J
+     return JS_TRUE;
+ 
+ error: // TRACE_2 jumps here on error, as well.
+     JS_UNLOCK_OBJ(cx, obj);
+     return JS_FALSE;
+ }
+ 
+ JS_FRIEND_API(JSBool)
+-js_LookupProperty(JSContext *cx, JSObject *obj, jsid id, JSObject **objp,
+-                  JSProperty **propp)
++js_LookupProperty(JSContext *cx, JSObject *obj, jsid id, JSFoundProperty *found)
+ {
+     return js_LookupPropertyWithFlags(cx, obj, id, cx->resolveFlags,
+                                       objp, propp) >= 0;
+ }
+ 
+ #define SCOPE_DEPTH_ACCUM(bs,val)                                             \
+     JS_SCOPE_DEPTH_METERING(JS_BASIC_STATS_ACCUM(bs, val))
+ 
+diff --git a/js/src/jsobj.h b/js/src/jsobj.h
+--- a/js/src/jsobj.h
++++ b/js/src/jsobj.h
+@@ -634,19 +634,18 @@ struct JSObject {
+     inline void initSharingEmptyScope(JSClass *clasp, JSObject *proto, JSObject *parent,
+                                       jsval privateSlotValue);
+ 
+     inline bool hasSlotsArray() const { return !!dslots; }
+ 
+     /* This method can only be called when hasSlotsArray() returns true. */
+     inline void freeSlotsArray(JSContext *cx);
+ 
+-    JSBool lookupProperty(JSContext *cx, jsid id,
+-                          JSObject **objp, JSProperty **propp) {
+-        return map->ops->lookupProperty(cx, this, id, objp, propp);
++    JSBool lookupProperty(JSContext *cx, jsid id, JSFoundProperty *found) {
++        return map->ops->lookupProperty(cx, this, id, found);
+     }
+ 
+     JSBool defineProperty(JSContext *cx, jsid id, jsval value,
+                           JSPropertyOp getter = JS_PropertyStub,
+                           JSPropertyOp setter = JS_PropertyStub,
+                           uintN attrs = JSPROP_ENUMERATE) {
+         return map->ops->defineProperty(cx, this, id, value, getter, setter, attrs);
+     }
+@@ -1068,18 +1067,18 @@ js_DefineNativeProperty(JSContext *cx, J
+ /*
+  * Unlike js_DefineNativeProperty, propp must be non-null. On success, and if
+  * id was found, return true with *objp non-null and locked, and with a held
+  * property stored in *propp. If successful but id was not found, return true
+  * with both *objp and *propp null. Therefore all callers who receive a
+  * non-null *propp must later call (*objp)->dropProperty(cx, *propp).
+  */
+ extern JS_FRIEND_API(JSBool)
+-js_LookupProperty(JSContext *cx, JSObject *obj, jsid id, JSObject **objp,
+-                  JSProperty **propp);
++js_LookupProperty(JSContext *cx, JSObject *obj, jsid id,
++                  JSFoundProperty *found);
+ 
+ /*
+  * Specialized subroutine that allows caller to preset JSRESOLVE_* flags and
+  * returns the index along the prototype chain in which *propp was found, or
+  * the last index if not found, or -1 on error.
+  */
+ extern int
+ js_LookupPropertyWithFlags(JSContext *cx, JSObject *obj, jsid id, uintN flags,
