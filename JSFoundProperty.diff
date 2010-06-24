@@ -26,7 +26,7 @@ diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.h
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,187 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -92,15 +92,13 @@ new file mode 100644
 +            JS_ASSERT(isNative());
 +            JS_ASSERT(mWhere->scope());
 +            JS_ASSERT(JS_IS_SCOPE_LOCKED(mLockCx, mWhere->scope()));
-+            JS_ASSERT(CX_OWNS_SCOPE_TITLE(mLockCx, mWhere->scope()));
 +        } else if (isNative()) {
 +            /*
-+             * Intuitively, these assertions should correlate with
-+             * !mLockCx && isNative(), but JS_UNLOCK_OBJ doesn't appear to
-+             * effect these conditions.
++             * Intuitively, this assertions should correlate with !mLockCx &&
++             * isNative(), but JS_UNLOCK_OBJ doesn't appear to effect this
++             * condition.
 +             */
 +            //JS_ASSERT(!JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
-+            //JS_ASSERT(!CX_OWNS_SCOPE_TITLE(mLockCx, mWhere->scope()));
 +        }
 +    }
 +
