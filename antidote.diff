@@ -4161,3 +4161,244 @@ diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
      static JSBool obj_setAttributes(JSContext *cx, JSObject *obj, jsid id, uintN *attrsp);
  
      static int32 lengthOffset() { return offsetof(TypedArray, length); }
+diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
+--- a/js/src/jsxml.cpp
++++ b/js/src/jsxml.cpp
+@@ -64,16 +64,17 @@
+ #include "jsparse.h"
+ #include "jsscan.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstr.h"
+ #include "jsxml.h"
+ #include "jsstaticcheck.h"
+ #include "jsvector.h"
++#include "jsfoundprop.h"
+ 
+ #include "jscntxtinlines.h"
+ #include "jsobjinlines.h"
+ 
+ #ifdef DEBUG
+ #include <string.h>     /* for #ifdef DEBUG memset calls */
+ #endif
+ 
+@@ -4491,46 +4492,46 @@ HasIndexedProperty(JSXML *xml, uint32 i)
+ }
+ 
+ static JSBool
+ HasSimpleContent(JSXML *xml);
+ 
+ static JSBool
+ HasFunctionProperty(JSContext *cx, JSObject *obj, jsid funid, JSBool *found)
+ {
+-    JSObject *pobj;
+-    JSProperty *prop;
+     JSXML *xml;
+ 
+     JS_ASSERT(obj->getClass() == &js_XMLClass);
+ 
+-    if (!js_LookupProperty(cx, obj, funid, &pobj, &prop))
++    JSFoundProperty fp(funid);
++    if (!js_LookupProperty(cx, obj, fp.id(), &fp))
+         return false;
+-    if (prop) {
+-        pobj->dropProperty(cx, prop);
++    if (fp.wasFound()) {
++        *found = JS_TRUE;
++        fp.drop(cx);
+     } else {
++        *found = JS_FALSE;
+         xml = (JSXML *) obj->getPrivate();
+         if (HasSimpleContent(xml)) {
+             AutoObjectRooter tvr(cx);
+ 
+             /*
+              * Search in String.prototype to set found whenever
+              * GetXMLFunction returns existing function.
+              */
+             if (!js_GetClassPrototype(cx, NULL, JSProto_String, tvr.addr()))
+                 return false;
+ 
+             JS_ASSERT(tvr.object());
+-            if (!js_LookupProperty(cx, tvr.object(), funid, &pobj, &prop))
++            if (!js_LookupProperty(cx, tvr.object(), funid, &fp))
+                 return false;
+-            if (prop)
+-                pobj->dropProperty(cx, prop);
+-        }
+-    }
+-    *found = (prop != NULL);
++            *found = fp.wasFound();
++            fp.drop(cx);
++        }
++    }
+     return true;
+ }
+ 
+ /* ECMA-357 9.1.1.6 XML [[HasProperty]] and 9.2.1.5 XMLList [[HasProperty]]. */
+ static JSBool
+ HasProperty(JSContext *cx, JSObject *obj, jsval id, JSBool *found)
+ {
+     JSXML *xml;
+@@ -4600,18 +4601,18 @@ xml_trace_vector(JSTracer *trc, JSXML **
+  * We partially workaround the problem in GetXMLFunction. There we take
+  * advantage of the fact that typically function:: is used to access the
+  * functions from XML.prototype. So when js_GetProperty returns a non-function
+  * property, we assume that it represents the result of GetProperty setter
+  * hiding the function and use an extra prototype chain lookup to recover it.
+  * For a proper solution see bug 355257.
+ */
+ static JSBool
+-xml_lookupProperty(JSContext *cx, JSObject *obj, jsid id, JSObject **objp,
+-                   JSProperty **propp)
++xml_lookupProperty(JSContext *cx, JSObject *obj, jsid id,
++                   JSFoundProperty *fp)
+ {
+     jsval v;
+     JSBool found;
+     JSXML *xml;
+     uint32 i;
+     JSObject *qn;
+     jsid funid;
+     JSScopeProperty *sprop;
+@@ -4620,32 +4621,30 @@ xml_lookupProperty(JSContext *cx, JSObje
+     xml = (JSXML *) obj->getPrivate();
+     if (js_IdIsIndex(v, &i)) {
+         found = HasIndexedProperty(xml, i);
+     } else {
+         qn = ToXMLName(cx, v, &funid);
+         if (!qn)
+             return JS_FALSE;
+         if (funid)
+-            return js_LookupProperty(cx, obj, funid, objp, propp);
++            return js_LookupProperty(cx, obj, funid, fp);
+         found = HasNamedProperty(xml, qn);
+     }
+     if (!found) {
+-        *objp = NULL;
+-        *propp = NULL;
++        fp->clear();
+     } else {
+         sprop = js_AddNativeProperty(cx, obj, id, GetProperty, PutProperty,
+                                      SPROP_INVALID_SLOT, JSPROP_ENUMERATE,
+                                      0, 0);
+         if (!sprop)
+             return JS_FALSE;
+ 
+         JS_LOCK_OBJ(cx, obj);
+-        *objp = obj;
+-        *propp = (JSProperty *) sprop;
++        fp->setWithSProp(cx, obj, sprop);
+     }
+     return JS_TRUE;
+ }
+ 
+ static JSBool
+ xml_defineProperty(JSContext *cx, JSObject *obj, jsid id, jsval value,
+                    JSPropertyOp getter, JSPropertyOp setter, uintN attrs)
+ {
+@@ -6983,21 +6982,19 @@ js_InitAnyNameClass(JSContext *cx, JSObj
+     if (!js_GetAnyName(cx, &v))
+         return NULL;
+     return JSVAL_TO_OBJECT(v);
+ }
+ 
+ JSObject *
+ js_InitXMLClass(JSContext *cx, JSObject *obj)
+ {
+-    JSObject *proto, *pobj;
++    JSObject *proto;
+     JSFunction *fun;
+     JSXML *xml;
+-    JSProperty *prop;
+-    JSScopeProperty *sprop;
+     jsval cval, vp[3];
+ 
+     /* Define the isXMLName function. */
+     if (!JS_DefineFunction(cx, obj, js_isXMLName_str, xml_isXMLName, 1, 0))
+         return NULL;
+ 
+     /* Define the XML class constructor and prototype. */
+     proto = JS_InitClass(cx, obj, NULL, &js_XMLClass, XML, 1,
+@@ -7014,26 +7011,25 @@ js_InitXMLClass(JSContext *cx, JSObject 
+     METER(xml_stats.xmlobj);
+ 
+     /*
+      * Prepare to set default settings on the XML constructor we just made.
+      * NB: We can't use JS_GetConstructor, because it calls
+      * JSObject::getProperty, which is xml_getProperty, which creates a new
+      * XMLList every time!  We must instead call js_LookupProperty directly.
+      */
+-    if (!js_LookupProperty(cx, proto,
+-                           ATOM_TO_JSID(cx->runtime->atomState.constructorAtom),
+-                           &pobj, &prop)) {
++    JSFoundProperty found(ATOM_TO_JSID(cx->runtime->atomState.constructorAtom));
++    if (!js_LookupProperty(cx, proto, found.id(), &found))
+         return NULL;
+-    }
+-    JS_ASSERT(prop);
+-    sprop = (JSScopeProperty *) prop;
+-    JS_ASSERT(SPROP_HAS_VALID_SLOT(sprop, pobj->scope()));
+-    cval = pobj->getSlotMT(cx, sprop->slot);
+-    JS_UNLOCK_OBJ(cx, pobj);
++    JS_ASSERT(found.wasFound());
++    JS_ASSERT(found.inScope());
++    JS_ASSERT(SPROP_HAS_VALID_SLOT(found.sprop(),
++                                   found.scope()));
++    cval = found.where()->getSlotMT(cx, found.sprop()->slot);
++    found.unlock();
+     JS_ASSERT(VALUE_IS_FUNCTION(cx, cval));
+ 
+     /* Set default settings. */
+     vp[0] = JSVAL_NULL;
+     vp[1] = cval;
+     vp[2] = JSVAL_VOID;
+     if (!xml_setSettings(cx, 1, vp))
+         return NULL;
+@@ -7348,20 +7344,19 @@ js_GetAnyName(JSContext *cx, jsval *vp)
+ 
+ JSBool
+ js_FindXMLProperty(JSContext *cx, jsval nameval, JSObject **objp, jsid *idp)
+ {
+     JSObject *nameobj;
+     jsval v;
+     JSObject *qn;
+     jsid funid;
+-    JSObject *obj, *target, *proto, *pobj;
++    JSObject *obj, *target, *proto;
+     JSXML *xml;
+     JSBool found;
+-    JSProperty *prop;
+     const char *printable;
+ 
+     JS_ASSERT(!JSVAL_IS_PRIMITIVE(nameval));
+     nameobj = JSVAL_TO_OBJECT(nameval);
+     if (nameobj->getClass() == &js_AnyNameClass) {
+         v = STRING_TO_JSVAL(ATOM_TO_STRING(cx->runtime->atomState.starAtom));
+         nameobj = js_ConstructObject(cx, &js_QNameClass.base, NULL, NULL, 1,
+                                      &v);
+@@ -7396,20 +7391,21 @@ js_FindXMLProperty(JSContext *cx, jsval 
+                     return JS_FALSE;
+             }
+             if (found) {
+                 *idp = OBJECT_TO_JSID(nameobj);
+                 *objp = target;
+                 return JS_TRUE;
+             }
+         } else if (funid != 0) {
+-            if (!target->lookupProperty(cx, funid, &pobj, &prop))
++            JSFoundProperty fp(funid);
++            if (!target->lookupProperty(cx, fp.id(), &fp))
+                 return JS_FALSE;
+-            if (prop) {
+-                pobj->dropProperty(cx, prop);
++            if (fp.wasFound()) {
++                fp.drop(cx);
+                 *idp = funid;
+                 *objp = target;
+                 return JS_TRUE;
+             }
+         }
+     } while ((obj = obj->getParent()) != NULL);
+ 
+     printable = js_ValueToPrintableString(cx, OBJECT_TO_JSVAL(nameobj));
