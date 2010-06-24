@@ -2,6 +2,28 @@
 # Parent 005a99cd61f91c127b288259a61456b889964920
 And it begins.
 
+diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
+--- a/js/src/jsfoundprop.h
++++ b/js/src/jsfoundprop.h
+@@ -164,13 +164,18 @@ public:
+     }
+ 
+     JSScopeProperty *sprop() const {
+         JS_ASSERT(inScope());
+         JS_ASSERT(!mWhere->isDenseArray());
+         return (JSScopeProperty*)mProp;
+     }
+ 
++    JSScope *scope() const {
++        JS_ASSERT(isNative());
++        return mWhere->scope();
++    }
++
+ };
+   
+ } /* namespace js { */
+ 
+ #endif /* #ifndef jsfoundprop_h_ */
 diff --git a/js/src/jsprvtd.h b/js/src/jsprvtd.h
 --- a/js/src/jsprvtd.h
 +++ b/js/src/jsprvtd.h
