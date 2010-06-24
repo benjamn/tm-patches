@@ -1,0 +1,28 @@
+# HG changeset patch
+# Parent 005a99cd61f91c127b288259a61456b889964920
+And it begins.
+
+diff --git a/js/src/jsprvtd.h b/js/src/jsprvtd.h
+--- a/js/src/jsprvtd.h
++++ b/js/src/jsprvtd.h
+@@ -336,18 +336,18 @@ typedef struct JSDebugHooks {
+  * successful lookup must be dropped via JSObject::dropProperty.
+  *
+  * NB: successful return with non-null *propp means the implementation may
+  * have locked *objp and added a reference count associated with *propp, so
+  * callers should not risk deadlock by nesting or interleaving other lookups
+  * or any obj-bearing ops before dropping *propp.
+  */
+ typedef JSBool
+-(* JSLookupPropOp)(JSContext *cx, JSObject *obj, jsid id, JSObject **objp,
+-                   JSProperty **propp);
++(* JSLookupPropOp)(JSContext *cx, JSObject *obj, jsid id,
++                   JSFoundProperty *found);
+ 
+ /*
+  * Define obj[id], a direct property of obj named id, having the given initial
+  * value, with the specified getter, setter, and attributes.
+  */
+ typedef JSBool
+ (* JSDefinePropOp)(JSContext *cx, JSObject *obj, jsid id, jsval value,
+                    JSPropertyOp getter, JSPropertyOp setter, uintN attrs);
