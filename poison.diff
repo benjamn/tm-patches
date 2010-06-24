@@ -391,7 +391,7 @@ diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
 +    if (own && found.wasFound() &&
 +        obj != found.where()) {
 +        found.drop(cx);
-+        found.forget();
++        found.clear();
 +    }
 +
 +    return found.getDescriptor(cx, desc);
@@ -545,7 +545,7 @@ diff --git a/js/src/jsarray.cpp b/js/src/jsarray.cpp
      if (IsDenseArrayId(cx, obj, id)) {
 -        *propp = (JSProperty *) id;
 -        *objp = obj;
-+        found->set(cx, obj, (JSProperty *) id);
++        found->setId(cx, obj, id);
          return JS_TRUE;
      }
  
@@ -553,7 +553,7 @@ diff --git a/js/src/jsarray.cpp b/js/src/jsarray.cpp
      if (!proto) {
 -        *objp = NULL;
 -        *propp = NULL;
-+        found->set(cx, NULL, NULL);
++        found->clear();
          return JS_TRUE;
      }
 -    return proto->lookupProperty(cx, id, objp, propp);
@@ -859,7 +859,7 @@ diff --git a/js/src/jsfoundprop.cpp b/js/src/jsfoundprop.cpp
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.cpp
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,146 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -907,6 +907,8 @@ new file mode 100644
 +JSBool
 +FoundProperty::getValue(JSContext *cx, jsval *vp, uintN getHow) const
 +{
++    assertInvariants(cx);
++
 +    if (!wasFound()) {
 +        *vp = JSVAL_VOID;
 +        return JS_TRUE;
@@ -927,8 +929,15 @@ new file mode 100644
 +        JSObject *obj = JSVAL_TO_OBJECT(*vp);
 +        JS_ASSERT(obj);
 +        if (!js_NativeGet(cx, obj, mWhere, sprop(), getHow, vp)) {
-+            // XXX js_NativeGet unlocks on failure, hence this hack:
-+            const_cast<FoundProperty*>(this)->mLockCx = NULL;
++            /*
++             * js_NativeGet unlocks on failure, so we need to re-lock.  This
++             * assertion should hold after js_NativeGet unlocks, but
++             * it seems that JS_IS_SCOPE_LOCKED lies.
++             */
++            //JS_ASSERT(!JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
++            JS_ASSERT(mLockCx);
++            JS_LOCK_OBJ(cx, mWhere);
++            assertInvariants(cx);
 +            return JS_FALSE;
 +        }
 +        return JS_TRUE;
@@ -945,6 +954,7 @@ new file mode 100644
 +{
 +    JS_ASSERT(!mWhere ||
 +              !mWhere->isProxy());
++    assertInvariants(cx);
 +
 +    if (!wasFound()) {
 +        desc->obj = NULL;
@@ -1000,7 +1010,7 @@ diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
 new file mode 100644
 --- /dev/null
 +++ b/js/src/jsfoundprop.h
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,212 @@
 +/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 + * vim: set ts=8 sw=4 et tw=99 ft=cpp:
 + *
@@ -1060,6 +1070,28 @@ new file mode 100644
 +    bool isNative() const { return wasFound() && mWhere->isNative(); }
 +    bool isVirtual() const { return isNative() && !mProp; }
 +
++    void assertInvariants(JSContext *cx) const {
++        JS_ASSERT(!mProp || mWhere);
++        JS_ASSERT(!mWhere || !isNative() || !mLockCx ||
++                  JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
++        if (mLockCx) {
++            JS_ASSERT(isNative());
++            JS_ASSERT(mWhere->scope());
++            JS_ASSERT(JS_IS_SCOPE_LOCKED(mLockCx, mWhere->scope()));
++            JS_ASSERT(CX_OWNS_SCOPE_TITLE(mLockCx, mWhere->scope()));
++        } else if (isNative()) {
++            /*
++             * Intuitively, these assertions should correlate with
++             * !mLockCx && isNative(), but JS_UNLOCK_OBJ doesn't appear to
++             * effect these conditions.
++             */
++            //JS_ASSERT(!JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
++            //JS_ASSERT(!CX_OWNS_SCOPE_TITLE(mLockCx, mWhere->scope()));
++        }
++        JS_ASSERT(!isVirtual() ||
++                  mWhere->getClass()->flags & JSCLASS_VIRTUAL_RESOLVE);        
++    }
++
 +public:
 +
 +    bool wasFound() const { return !!mWhere; }
@@ -1074,28 +1106,50 @@ new file mode 100644
 +
 +    ~FoundProperty() { unlock(); }
 +
-+    void set(JSContext *cx,
-+             JSObject *where,
-+             JSProperty *prop)
++    void setId(JSContext *cx,
++               JSObject *where,
++               jsid id)
 +    {
 +        JS_ASSERT(cx);
-+        JS_ASSERT(!prop || where);
++        JS_ASSERT(where);
++        JS_ASSERT(mId == id);
++
++        assertInvariants(cx);
 +
 +        unlock();
 +
 +        mWhere = where;
-+        mProp = prop;
++        mProp = (JSProperty*)id;
 +        mLockCx = isNative() ? cx : NULL;
 +
-+        JS_ASSERT(!mWhere || !isNative() ||
-+                  !mLockCx == !JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
-+        JS_ASSERT(!isVirtual() ||
-+                  mWhere->getClass()->flags & JSCLASS_VIRTUAL_RESOLVE);
++        assertInvariants(cx);
++    }
++
++    void setSProp(JSContext *cx,
++                  JSObject *where,
++                  JSScopeProperty *sprop)
++    {
++        JS_ASSERT(cx);
++
++        assertInvariants(mLockCx);
++
++        unlock();
++
++        mWhere = where;
++        mProp = (JSProperty*)sprop;
++        mLockCx = isNative() ? cx : NULL;
++
++        assertInvariants(cx);
++    }
++
++    void clear() {
++        unlock();
++        mWhere = NULL;
++        mProp = NULL;
 +    }
 +
 +    void unlock() {
 +        if (mLockCx) {
-+            JS_ASSERT(JS_IS_SCOPE_LOCKED(mLockCx, mWhere->scope()));
 +            JS_UNLOCK_OBJ(mLockCx, mWhere);
 +            mLockCx = NULL;
 +        }
@@ -1156,16 +1210,12 @@ new file mode 100644
 +        return mWhere->setAttributes(cx, mId, &attrs);
 +    }
 +
-+    void forget() {
-+        unlock();
-+        mWhere = NULL;
-+        mProp = NULL;
-+    }
-+
 +    void drop(JSContext *cx) {
++        assertInvariants(cx);
 +        if (inScope()) {
 +            unlock(); // dropProperty unlocks, so unlock first
 +            mWhere->dropProperty(cx, mProp);
++            assertInvariants(cx);
 +        }
 +    }
 +};
@@ -1782,7 +1832,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 -        (*objp)->dropProperty(cx, *propp);
 -        *propp = NULL;
 +        found->drop(cx);
-+        found->forget();
++        found->clear();
      }
      return true;
  }
@@ -2436,7 +2486,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 -    if (propp)
 -        *propp = (JSProperty *) sprop;
 +    if (found_rval)
-+        found_rval->set(cx, obj, (JSProperty *) sprop);
++        found_rval->setSProp(cx, obj, sprop);
      else
          JS_UNLOCK_OBJ(cx, obj);
      return JS_TRUE;
@@ -2669,7 +2719,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 +            obj = NULL; /* Nothing found. */
 +    }
 +
-+    found->set(cx, obj, (JSProperty *) sprop);
++    found->setSProp(cx, obj, sprop);
 +    JS_ASSERT(!found->wasFound() ||
 +              found->inScope() ||
 +              JSCLASS_VIRTUAL_RESOLVE == masked);
@@ -2695,7 +2745,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
              SCOPE_DEPTH_ACCUM(&cx->runtime->protoLookupDepthStats, protoIndex);
 -            *objp = obj;
 -            *propp = (JSProperty *) sprop;
-+            found->set(cx, obj, (JSProperty *) sprop);
++            found->setSProp(cx, obj, sprop);
              return protoIndex;
          }
  
@@ -2737,7 +2787,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
 -    *objp = NULL;
 -    *propp = NULL;
-+    found->set(cx, NULL, NULL);
++    found->clear();
      return protoIndex;
  }
  
@@ -4584,9 +4634,9 @@ diff --git a/js/src/jsproxy.cpp b/js/src/jsproxy.cpp
 -        *propp = NULL;
 -    }
 +    if (has)
-+        found->set(cx, obj, (JSProperty *)id);
++        found->setId(cx, obj, id);
 +    else
-+        found->set(cx, NULL, NULL);
++        found->clear();
 +
      return true;
  }
@@ -4981,7 +5031,7 @@ diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
      if (tarray->isArrayIndex(cx, id)) {
 -        *propp = (JSProperty *) id;
 -        *objp = obj;
-+        found->set(cx, obj, (JSProperty *) id);
++        found->setId(cx, obj, id);
          return true;
      }
  
@@ -4989,7 +5039,7 @@ diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
      if (!proto) {
 -        *objp = NULL;
 -        *propp = NULL;
-+        found->set(cx, NULL, NULL);
++        found->clear();
          return true;
      }
  
@@ -5202,7 +5252,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
      if (!found) {
 -        *objp = NULL;
 -        *propp = NULL;
-+        fp->set(cx, NULL, NULL);
++        fp->clear();
      } else {
          sprop = js_AddNativeProperty(cx, obj, id, GetProperty, PutProperty,
                                       SPROP_INVALID_SLOT, JSPROP_ENUMERATE,
@@ -5213,7 +5263,7 @@ diff --git a/js/src/jsxml.cpp b/js/src/jsxml.cpp
          JS_LOCK_OBJ(cx, obj);
 -        *objp = obj;
 -        *propp = (JSProperty *) sprop;
-+        fp->set(cx, obj, (JSProperty *) sprop);
++        fp->setSProp(cx, obj, sprop);
      }
      return JS_TRUE;
  }
