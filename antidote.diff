@@ -4033,6 +4033,309 @@ diff --git a/js/src/jsproxy.cpp b/js/src/jsproxy.cpp
                       JSPropertyOp getter, JSPropertyOp setter, uintN attrs)
  {
      AutoDescriptor desc(cx);
+diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
+--- a/js/src/jstracer.cpp
++++ b/js/src/jstracer.cpp
+@@ -71,16 +71,17 @@
+ #include "jsopcode.h"
+ #include "jsregexp.h"
+ #include "jsscope.h"
+ #include "jsscript.h"
+ #include "jsstaticcheck.h"
+ #include "jstracer.h"
+ #include "jsxml.h"
+ #include "jstypedarray.h"
++#include "jsfoundprop.h"
+ 
+ #include "jsatominlines.h"
+ #include "jscntxtinlines.h"
+ #include "jspropertycacheinlines.h"
+ #include "jsobjinlines.h"
+ #include "jsscopeinlines.h"
+ #include "jsscriptinlines.h"
+ 
+@@ -7872,27 +7873,26 @@ JS_REQUIRES_STACK AbortableRecordingStat
+ TraceRecorder::scopeChainProp(JSObject* chainHead, jsval*& vp, LIns*& ins, NameResult& nr)
+ {
+     JS_ASSERT(chainHead == cx->fp->scopeChain);
+     JS_ASSERT(chainHead != globalObj);
+ 
+     TraceMonitor &localtm = *traceMonitor;
+ 
+     JSAtom* atom = atoms[GET_INDEX(cx->regs->pc)];
+-    JSObject* obj2;
+-    JSProperty* prop;
+     JSObject *obj = chainHead;
+-    if (!js_FindProperty(cx, ATOM_TO_JSID(atom), &obj, &obj2, &prop))
++    JSFoundProperty found(ATOM_TO_JSID(atom));
++    if (!js_FindProperty(cx, found.id(), &obj, &found))
+         RETURN_ERROR_A("error in js_FindProperty");
+ 
+     /* js_FindProperty can reenter the interpreter and kill |this|. */
+     if (!localtm.recorder)
+         return ARECORD_ABORTED;
+ 
+-    if (!prop)
++    if (!found.wasFound())
+         RETURN_STOP_A("failed to find name in non-global scope chain");
+ 
+     if (obj == globalObj) {
+         // Even if the property is on the global object, we must guard against
+         // the creation of properties that shadow the property in the middle
+         // of the scope chain.
+         LIns *head_ins;
+         if (cx->fp->argv) {
+@@ -7902,57 +7902,54 @@ TraceRecorder::scopeChainProp(JSObject* 
+             chainHead = cx->fp->calleeObject()->getParent();
+             head_ins = stobj_get_parent(get(&cx->fp->argv[-2]));
+         } else {
+             head_ins = scopeChain();
+         }
+         LIns *obj_ins;
+         CHECK_STATUS_A(traverseScopeChain(chainHead, head_ins, obj, obj_ins));
+ 
+-        if (obj2 != obj) {
+-            obj2->dropProperty(cx, prop);
++        if (found.where() != obj) {
++            found.drop(cx);
+             RETURN_STOP_A("prototype property");
+         }
+ 
+-        JSScopeProperty* sprop = (JSScopeProperty*) prop;
+-        if (!isValidSlot(obj->scope(), sprop)) {
+-            JS_UNLOCK_OBJ(cx, obj2);
++        if (!found.inScope()) {
++            // TODO Handle virtual properties here.
++            return ARECORD_ABORTED;
++        }
++
++        JSScopeProperty* sprop = found.sprop();
++        if (!isValidSlot(obj->scope(), sprop))
+             return ARECORD_STOP;
+-        }
+-        if (!lazilyImportGlobalSlot(sprop->slot)) {
+-            JS_UNLOCK_OBJ(cx, obj2);
++        if (!lazilyImportGlobalSlot(sprop->slot))
+             RETURN_STOP_A("lazy import of global slot failed");
+-        }
+         vp = &obj->getSlotRef(sprop->slot);
+         ins = get(vp);
+-        JS_UNLOCK_OBJ(cx, obj2);
+         nr.tracked = true;
+         return ARECORD_CONTINUE;
+     }
+ 
+-    if (obj == obj2 && obj->getClass() == &js_CallClass) {
++    if (obj == found.where() && obj->getClass() == &js_CallClass) {
+         AbortableRecordingStatus status =
+-            InjectStatus(callProp(obj, prop, ATOM_TO_JSID(atom), vp, ins, nr));
+-        JS_UNLOCK_OBJ(cx, obj);
++            InjectStatus(callProp(obj, found.sprop(), found.id(), vp, ins, nr));
+         return status;
+     }
+ 
+-    obj2->dropProperty(cx, prop);
++    found.drop(cx);
+     RETURN_STOP_A("fp->scopeChain is not global or active call object");
+ }
+ 
+ /*
+  * Generate LIR to access a property of a Call object.
+  */
+ JS_REQUIRES_STACK RecordingStatus
+-TraceRecorder::callProp(JSObject* obj, JSProperty* prop, jsid id, jsval*& vp,
++TraceRecorder::callProp(JSObject* obj, JSScopeProperty* sprop, jsid id, jsval*& vp,
+                         LIns*& ins, NameResult& nr)
+ {
+-    JSScopeProperty *sprop = (JSScopeProperty*) prop;
+-
+     JSOp op = JSOp(*cx->regs->pc);
+     uint32 setflags = (js_CodeSpec[op].format & (JOF_SET | JOF_INCDEC | JOF_FOR));
+     if (setflags && !sprop->writable())
+         RETURN_STOP("writing to a read-only property");
+ 
+     uintN slot = uint16(sprop->shortid);
+ 
+     vp = NULL;
+@@ -9212,73 +9209,71 @@ TraceRecorder::test_property_cache(JSObj
+     if (!aobj->isNative())
+         RETURN_STOP_A("non-native object");
+ 
+     JSAtom* atom;
+     PropertyCacheEntry* entry;
+     JS_PROPERTY_CACHE(cx).test(cx, pc, aobj, obj2, entry, atom);
+     if (atom) {
+         // Miss: pre-fill the cache for the interpreter, as well as for our needs.
+-        jsid id = ATOM_TO_JSID(atom);
+-        JSProperty* prop;
++        JSFoundProperty found(ATOM_TO_JSID(atom));
+         if (JOF_OPMODE(*pc) == JOF_NAME) {
+             JS_ASSERT(aobj == obj);
+ 
+             TraceMonitor &localtm = *traceMonitor;
+-            entry = js_FindPropertyHelper(cx, id, true, &obj, &obj2, &prop);
++            entry = js_FindPropertyHelper(cx, found.id(), true, &obj, &found);
++            obj2 = found.where(true);
+             if (!entry)
+                 RETURN_ERROR_A("error in js_FindPropertyHelper");
+ 
+             /* js_FindPropertyHelper can reenter the interpreter and kill |this|. */
+             if (!localtm.recorder)
+                 return ARECORD_ABORTED;
+ 
+             if (entry == JS_NO_PROP_CACHE_FILL)
+                 RETURN_STOP_A("cannot cache name");
+         } else {
+             TraceMonitor &localtm = *traceMonitor;
+             JSContext *localcx = cx;
+-            int protoIndex = js_LookupPropertyWithFlags(cx, aobj, id,
+-                                                        cx->resolveFlags,
+-                                                        &obj2, &prop);
+-
++            int protoIndex =
++                js_LookupPropertyWithFlags(cx, aobj, found.id(),
++                                           cx->resolveFlags, &found);
++            obj2 = found.where(true);
+             if (protoIndex < 0)
+                 RETURN_ERROR_A("error in js_LookupPropertyWithFlags");
+ 
+             /* js_LookupPropertyWithFlags can reenter the interpreter and kill |this|. */
+             if (!localtm.recorder) {
+-                if (prop)
+-                    obj2->dropProperty(localcx, prop);
++                found.drop(localcx);
+                 return ARECORD_ABORTED;
+             }
+ 
+-            if (prop) {
+-                if (!obj2->isNative())
+-                    RETURN_STOP_A("property found on non-native object");
++            if (found.wasFound()) {
++                if (!found.inScope())
++                    RETURN_STOP_A("property not found in scope");
+                 entry = JS_PROPERTY_CACHE(cx).fill(cx, aobj, 0, protoIndex, obj2,
+-                                                   (JSScopeProperty*) prop);
++                                                   found.sprop());
+                 JS_ASSERT(entry);
+                 if (entry == JS_NO_PROP_CACHE_FILL)
+                     entry = NULL;
+             }
+-
+-        }
+-
+-        if (!prop) {
++        }
++
++        if (!found.wasFound()) {
+             // Propagate obj from js_FindPropertyHelper to record_JSOP_BINDNAME
+             // via our obj2 out-parameter. If we are recording JSOP_SETNAME and
+             // the global it's assigning does not yet exist, create it.
+             obj2 = obj;
+ 
+             // Use a null pcval to return "no such property" to our caller.
+             pcval.setNull();
+             return ARECORD_CONTINUE;
+         }
+ 
+-        obj2->dropProperty(cx, prop);
++        found.drop(cx);
+         if (!entry)
+             RETURN_STOP_A("failed to fill property cache");
+     }
+ 
+ #ifdef JS_THREADSAFE
+     // There's a potential race in any JS_THREADSAFE embedding that's nuts
+     // enough to share mutable objects on the scope or proto chain, but we
+     // don't care about such insane embeddings. Anyway, the (scope, proto)
+@@ -11889,21 +11884,21 @@ TraceRecorder::getPropertyById(LIns* obj
+ 
+ /* Manually inlined, specialized copy of js_NativeGet. */
+ static JSBool FASTCALL
+ GetPropertyWithNativeGetter(JSContext* cx, JSObject* obj, JSScopeProperty* sprop, jsval* vp)
+ {
+     LeaveTraceIfGlobalObject(cx, obj);
+ 
+ #ifdef DEBUG
+-    JSProperty* prop;
+-    JSObject* pobj;
+-    JS_ASSERT(obj->lookupProperty(cx, sprop->id, &pobj, &prop));
+-    JS_ASSERT(prop == (JSProperty*) sprop);
+-    pobj->dropProperty(cx, prop);
++    JSFoundProperty found(sprop->id);
++    JS_ASSERT(obj->lookupProperty(cx, found.id(), &found));
++    JS_ASSERT(found.inScope());
++    JS_ASSERT(found.sprop() == sprop);
++    found.drop(cx);
+ #endif
+ 
+     // JSScopeProperty::get contains a special case for With objects. We can
+     // elide it here because With objects are, we claim, never on the operand
+     // stack while recording.
+     JS_ASSERT(obj->getClass() != &js_WithClass);
+ 
+     *vp = JSVAL_VOID;
+@@ -14174,33 +14169,31 @@ TraceRecorder::record_JSOP_IN()
+     }
+ 
+     guard(false, lir->ins2ImmI(LIR_eqi, x, JSVAL_TO_SPECIAL(JSVAL_VOID)), OOM_EXIT);
+     x = lir->ins2ImmI(LIR_eqi, x, 1);
+ 
+     TraceMonitor &localtm = *traceMonitor;
+     JSContext *localcx = cx;
+ 
+-    JSObject* obj2;
+-    JSProperty* prop;
+-    JSBool ok = obj->lookupProperty(cx, id, &obj2, &prop);
++    JSFoundProperty found(id);
++    JSBool ok = obj->lookupProperty(cx, id, &found);
+ 
+     if (!ok)
+         RETURN_ERROR_A("obj->lookupProperty failed in JSOP_IN");
+ 
+     /* lookupProperty can reenter the interpreter and kill |this|. */
+     if (!localtm.recorder) {
+-        if (prop)
+-            obj2->dropProperty(localcx, prop);
++        if (found.wasFound())
++            found.drop(localcx);
+         return ARECORD_ABORTED;
+     }
+ 
+-    bool cond = prop != NULL;
+-    if (prop)
+-        obj2->dropProperty(cx, prop);
++    bool cond = found.wasFound();
++    found.drop(cx);
+ 
+     /*
+      * The interpreter fuses comparisons and the following branch, so we have
+      * to do that here as well.
+      */
+     fuseIf(cx->regs->pc + 1, cond, x);
+ 
+     /*
+diff --git a/js/src/jstracer.h b/js/src/jstracer.h
+--- a/js/src/jstracer.h
++++ b/js/src/jstracer.h
+@@ -1171,17 +1171,17 @@ class TraceRecorder
+         JSScopeProperty  *sprop;         // sprop name was resolved to
+     };
+ 
+     JS_REQUIRES_STACK nanojit::LIns* scopeChain();
+     JS_REQUIRES_STACK nanojit::LIns* entryScopeChain() const;
+     JS_REQUIRES_STACK JSStackFrame* frameIfInRange(JSObject* obj, unsigned* depthp = NULL) const;
+     JS_REQUIRES_STACK RecordingStatus traverseScopeChain(JSObject *obj, nanojit::LIns *obj_ins, JSObject *obj2, nanojit::LIns *&obj2_ins);
+     JS_REQUIRES_STACK AbortableRecordingStatus scopeChainProp(JSObject* obj, jsval*& vp, nanojit::LIns*& ins, NameResult& nr);
+-    JS_REQUIRES_STACK RecordingStatus callProp(JSObject* obj, JSProperty* sprop, jsid id, jsval*& vp, nanojit::LIns*& ins, NameResult& nr);
++    JS_REQUIRES_STACK RecordingStatus callProp(JSObject* obj, JSScopeProperty* sprop, jsid id, jsval*& vp, nanojit::LIns*& ins, NameResult& nr);
+ 
+     JS_REQUIRES_STACK nanojit::LIns* arg(unsigned n);
+     JS_REQUIRES_STACK void arg(unsigned n, nanojit::LIns* i);
+     JS_REQUIRES_STACK nanojit::LIns* var(unsigned n);
+     JS_REQUIRES_STACK void var(unsigned n, nanojit::LIns* i);
+     JS_REQUIRES_STACK nanojit::LIns* upvar(JSScript* script, JSUpvarArray* uva, uintN index, jsval& v);
+     nanojit::LIns* stackLoad(nanojit::LIns* addr, nanojit::AccSet accSet, uint8 type);
+     JS_REQUIRES_STACK nanojit::LIns* stack(int n);
 diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
 --- a/js/src/jstypedarray.cpp
 +++ b/js/src/jstypedarray.cpp
