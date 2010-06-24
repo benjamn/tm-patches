@@ -4497,7 +4497,26 @@ diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
 diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
 --- a/js/src/jstypedarray.h
 +++ b/js/src/jstypedarray.h
-@@ -127,17 +127,17 @@ struct JS_FRIEND_API(TypedArray) {
+@@ -41,16 +41,18 @@
+ #define jstypedarray_h
+ 
+ #include "jsapi.h"
+ 
+ typedef struct JSProperty JSProperty;
+ 
+ namespace js {
+ 
++class FoundProperty;
++
+ /*
+  * ArrayBuffer
+  *
+  * This class holds the underlying raw buffer that the TypedArray
+  * subclasses access.  It can be created explicitly and passed to a
+  * TypedArray subclass, or can be created implicitly by constructing a
+  * TypedArray with a size.
+  */
+@@ -127,17 +129,17 @@ struct JS_FRIEND_API(TypedArray) {
      static TypedArray *fromJSObject(JSObject *obj);
  
      static JSBool prop_getBuffer(JSContext *cx, JSObject *obj, jsval id, jsval *vp);
@@ -4507,7 +4526,7 @@ diff --git a/js/src/jstypedarray.h b/js/src/jstypedarray.h
  
      static JSBool obj_lookupProperty(JSContext *cx, JSObject *obj, jsid id,
 -                                     JSObject **objp, JSProperty **propp);
-+                                     JSFoundProperty *found);
++                                     FoundProperty *found);
  
      static void obj_trace(JSTracer *trc, JSObject *obj);
  
