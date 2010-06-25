@@ -1,0 +1,142 @@
+# HG changeset patch
+# Parent 1d1990b462f94915cee0cb072a9735e35716817b
+
+diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
+--- a/js/src/jsobj.cpp
++++ b/js/src/jsobj.cpp
+@@ -4307,73 +4307,74 @@ js_LookupProperty(JSContext *cx, JSObjec
+ static JSBool
+ CallResolveOp(JSContext *cx, JSObject *start, JSObject *obj, jsid id, uintN flags,
+               JSFoundProperty *found, bool *recursedp)
+ {
+     JSClass *clasp = obj->getClass();
+     JSResolveOp resolve = clasp->resolve;
+     JSScope *scope = obj->scope();
+ 
+-    /*
+-     * Avoid recursion on (obj, id) already being resolved on cx.
+-     *
+-     * Once we have successfully added an entry for (obj, key) to
+-     * cx->resolvingTable, control must go through cleanup: before
+-     * returning.  But note that JS_DHASH_ADD may find an existing
+-     * entry, in which case we bail to suppress runaway recursion.
+-     */
++    /* Avoid recursion on (obj, id) already being resolved on cx. */
+     JSResolvingKey key = {obj, id};
+     JSResolvingEntry *entry;
+     if (!js_StartResolving(cx, &key, JSRESFLAG_LOOKUP, &entry)) {
+         JS_UNLOCK_OBJ(cx, obj);
+         return false;
+     }
+     if (!entry) {
+         /* Already resolving id in obj -- suppress recursion. */
+         JS_UNLOCK_OBJ(cx, obj);
+         *recursedp = true;
+         return true;
+     }
+-    uint32 generation = cx->resolvingTable->generation;
+     *recursedp = false;
+ 
++    const struct AutoStopResolving {
++        JSContext *cx;
++        JSResolvingKey *keyPtr;
++        JSResolvingEntry *entry;
++        uint32 generation;
++        ~AutoStopResolving() {
++            js_StopResolving(cx, keyPtr, JSRESFLAG_LOOKUP, entry, generation);
++        }
++    } asr = { cx, &key, entry, cx->resolvingTable->generation };
++
+     JS_ASSERT(!found->wasFound());
+ 
+-    JSBool ok;
+     JSScopeProperty *sprop = NULL;
+     if (clasp->flags & JSCLASS_NEW_RESOLVE) {
+-        JSNewResolveOp newresolve = (JSNewResolveOp)resolve;
+         if (flags == JSRESOLVE_INFER)
+             flags = js_InferFlags(cx, flags);
+         JSObject *obj2 = (clasp->flags & JSCLASS_NEW_RESOLVE_GETS_START) ? start : NULL;
+         JS_UNLOCK_OBJ(cx, obj);
+ 
+         {
+             /* Protect id and all atoms from a GC nested in resolve. */
+             AutoKeepAtoms keep(cx->runtime);
+-            ok = newresolve(cx, obj, ID_TO_VALUE(id), flags, &obj2);
++            if (!reinterpret_cast<JSNewResolveOp>(resolve)(cx, obj,
++                                                           ID_TO_VALUE(id),
++                                                           flags, &obj2))
++                return JS_FALSE;
+         }
+-        if (!ok) // TODO Get rid of these stupid gotos.
+-            goto cleanup;
+ 
+         JS_LOCK_OBJ(cx, obj);
+         if (obj2) {
+             /* Resolved: juggle locks and lookup id again. */
+             if (obj2 != obj) {
+                 JS_UNLOCK_OBJ(cx, obj);
+                 if (obj2->isNative())
+                     JS_LOCK_OBJ(cx, obj2);
+             }
+             if (!obj2->isNative()) {
+                 /* Whoops, newresolve handed back a foreign obj2. */
+                 JS_ASSERT(obj2 != obj);
+-                ok = obj2->lookupProperty(cx, id, found);
+-                if (!ok || found->wasFound())
+-                    goto cleanup;
+-                JS_LOCK_OBJ(cx, obj2);
++                if (!obj2->lookupProperty(cx, id, found))
++                    return JS_FALSE;
++                if (found->wasFound())
++                    return JS_TRUE;
+             } else {
+                 /*
+                  * Require that obj2 have its own scope now, as we
+                  * do for old-style resolve.  If it doesn't, then
+                  * id was not truly resolved, and we'll find it in
+                  * the proto chain, or miss it if obj2's proto is
+                  * not on obj's proto chain.  That last case is a
+                  * "too bad!" case.
+@@ -4393,33 +4394,32 @@ CallResolveOp(JSContext *cx, JSObject *s
+             }
+         }
+     } else {
+         /*
+          * Old resolve always requires id re-lookup if obj owns
+          * its scope after resolve returns.
+          */
+         JS_UNLOCK_OBJ(cx, obj);
+-        ok = resolve(cx, obj, ID_TO_VALUE(id));
+-        if (!ok)
+-            goto cleanup;
++        if (!resolve(cx, obj, ID_TO_VALUE(id)))
++            return JS_FALSE;
+         JS_LOCK_OBJ(cx, obj);
+         JS_ASSERT(obj->isNative());
+         scope = obj->scope();
+         if (!scope->isSharedEmpty())
+             sprop = scope->lookup(id);
+     }
+ 
+-cleanup:
+-    if (ok && sprop) {
+-        JS_ASSERT(obj->scope() == scope);
+-        found->setWithSProp(cx, obj, sprop);
+-    }
+-    js_StopResolving(cx, &key, JSRESFLAG_LOOKUP, entry, generation);
+-    return ok;
++    if (!sprop)
++        obj = NULL;
++
++    /* Use asr.cx just to suppress spurious unused variable warnings. */
++    found->setWithSProp(asr.cx, obj, sprop);
++
++    return JS_TRUE;
+ }
+ 
+ int
+ js_LookupPropertyWithFlags(JSContext *cx, JSObject *obj, jsid id, uintN flags,
+                            JSFoundProperty *found)
+ {
+     /* Convert string indices to integers if appropriate. */
+     id = js_CheckForStringIndex(id);

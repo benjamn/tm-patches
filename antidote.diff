@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent ab11eda99f71671dd7e57c3e6a52fee9e381cd03
+# Parent 5b61eaa3dd8f6032dfb9c703fecfef137448e285
 
 diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
 --- a/js/src/jsapi.cpp
@@ -805,61 +805,6 @@ diff --git a/js/src/jsexn.cpp b/js/src/jsexn.cpp
  exn_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
              JSObject **objp)
  {
-diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
---- a/js/src/jsfoundprop.h
-+++ b/js/src/jsfoundprop.h
-@@ -53,28 +53,28 @@ class FoundProperty
-     JSObject *mWhere;
-     JSProperty *mProp;
- 
-     bool isNative() const { return wasFound() && mWhere->isNative(); }
- 
-     void assertInvariants(JSContext *cx) const {
-         JS_ASSERT(!mProp || mWhere);
-         JS_ASSERT(!mWhere || !isNative() || !mLockCx ||
--                  JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
-+                  JS_IS_SCOPE_LOCKED(cx, scope()));
-         if (mLockCx) {
-             JS_ASSERT(isNative());
--            JS_ASSERT(mWhere->scope());
--            JS_ASSERT(JS_IS_SCOPE_LOCKED(mLockCx, mWhere->scope()));
-+            JS_ASSERT(scope());
-+            JS_ASSERT(JS_IS_SCOPE_LOCKED(mLockCx, scope()));
-         } else if (isNative()) {
-             /*
-              * Intuitively, this assertions should correlate with !mLockCx &&
-              * isNative(), but JS_UNLOCK_OBJ doesn't appear to effect this
-              * condition.
-              */
--            //JS_ASSERT(!JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
-+            //JS_ASSERT(!JS_IS_SCOPE_LOCKED(cx, scope()));
-         }
-     }
- 
- public:
- 
-     bool wasFound() const { return !!mWhere; }
-     bool inScope() const { return isNative() && mProp; }
- 
-@@ -128,17 +128,17 @@ public:
-                      JSProperty *prop)
-     {
-         JS_ASSERT(!mWhere || !mWhere->isDenseArray());
-         setWithSProp(cx, where, (JSScopeProperty*)prop);
-     }
- 
-     void unlock() {
-         if (mLockCx) {
--            JS_UNLOCK_OBJ(mLockCx, mWhere);
-+            JS_UNLOCK_SCOPE(mLockCx, scope());
-             mLockCx = NULL;
-         }
-     }
- 
-     void drop(JSContext *cx) {
-         assertInvariants(cx);
-         if (inScope()) {
-             unlock(); // dropProperty unlocks, so unlock first
 diff --git a/js/src/jsfun.cpp b/js/src/jsfun.cpp
 --- a/js/src/jsfun.cpp
 +++ b/js/src/jsfun.cpp

@@ -87,24 +87,24 @@ new file mode 100644
 +    void assertInvariants(JSContext *cx) const {
 +        JS_ASSERT(!mProp || mWhere);
 +        JS_ASSERT(!mWhere || !isNative() || !mLockCx ||
-+                  JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
++                  JS_IS_SCOPE_LOCKED(cx, scope()));
 +        if (mLockCx) {
 +            JS_ASSERT(isNative());
-+            JS_ASSERT(mWhere->scope());
-+            JS_ASSERT(JS_IS_SCOPE_LOCKED(mLockCx, mWhere->scope()));
++            JS_ASSERT(scope());
++            JS_ASSERT(JS_IS_SCOPE_LOCKED(mLockCx, scope()));
 +        } else if (isNative()) {
 +            /*
 +             * Intuitively, this assertions should correlate with !mLockCx &&
 +             * isNative(), but JS_UNLOCK_OBJ doesn't appear to effect this
 +             * condition.
 +             */
-+            //JS_ASSERT(!JS_IS_SCOPE_LOCKED(cx, mWhere->scope()));
++            //JS_ASSERT(!JS_IS_SCOPE_LOCKED(cx, scope()));
 +        }
 +    }
 +
 +public:
 +
-+    bool wasFound() const { return !!mWhere; }
++    bool wasFound() const { return mWhere && mProp; }
 +    bool inScope() const { return isNative() && mProp; }
 +
 +    FoundProperty(jsid id)
@@ -156,13 +156,13 @@ new file mode 100644
 +                     JSObject *where,
 +                     JSProperty *prop)
 +    {
-+        JS_ASSERT(!mWhere || !mWhere->isDenseArray());
++        JS_ASSERT(!where || !where->isDenseArray());
 +        setWithSProp(cx, where, (JSScopeProperty*)prop);
 +    }
 +
 +    void unlock() {
 +        if (mLockCx) {
-+            JS_UNLOCK_OBJ(mLockCx, mWhere);
++            JS_UNLOCK_SCOPE(mLockCx, scope());
 +            mLockCx = NULL;
 +        }
 +    }
