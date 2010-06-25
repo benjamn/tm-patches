@@ -2,4 +2,5 @@ JSFoundProperty.diff
 poison.diff
 antidote.diff
 clean-up-CallResolveOp.diff
+nativeGetValue.diff
 #exploration.diff

@@ -1,0 +1,136 @@
+# HG changeset patch
+# Parent 4d09154856a9b6d20e8330fabbc08bc6d659cac3
+
+diff --git a/js/src/jsarray.cpp b/js/src/jsarray.cpp
+--- a/js/src/jsarray.cpp
++++ b/js/src/jsarray.cpp
+@@ -785,23 +785,17 @@ array_getProperty(JSContext *cx, JSObjec
+         }
+ 
+         *vp = JSVAL_VOID;
+         JSFoundProperty found(id);
+         if (js_LookupPropertyWithFlags(cx, proto, id, cx->resolveFlags,
+                                        &found) < 0)
+             return JS_FALSE;
+ 
+-        if (found.inScope() &&
+-            !js_NativeGet(cx, obj, found.where(), found.sprop(),
+-                          JSGET_METHOD_BARRIER, vp))
+-                // TODO Audit failing calls to js_NativeGet.
+-                return JS_FALSE;
+-
+-        return JS_TRUE;
++        return !found.inScope() || found.nativeGetValue(cx, obj, vp);
+     }
+ 
+     *vp = obj->getDenseArrayElement(i);
+     return JS_TRUE;
+ }
+ 
+ static JSBool
+ slowarray_addProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
+diff --git a/js/src/jsfoundprop.h b/js/src/jsfoundprop.h
+--- a/js/src/jsfoundprop.h
++++ b/js/src/jsfoundprop.h
+@@ -175,13 +175,29 @@ public:
+         return (JSScopeProperty*)mProp;
+     }
+ 
+     JSScope *scope() const {
+         JS_ASSERT(isNative());
+         return mWhere->scope();
+     }
+ 
++    /* thisObj is the object on which the property was first sought. */
++    JSBool nativeGetValue(JSContext *cx, JSObject *thisObj, jsval *vp,
++                          uintN getHow = JSGET_METHOD_BARRIER) const
++    {
++        JS_ASSERT(inScope());
++        if (!js_NativeGet(cx, thisObj, mWhere, sprop(), getHow, vp)) {
++            /* js_NativeGet unlocks on failure, so we need to re-lock. */
++            JS_ASSERT(mLockCx);
++            JS_ASSERT(mLockCx == cx);
++            JS_LOCK_SCOPE(mLockCx, scope());
++            assertInvariants(cx);
++            return JS_FALSE;
++        }
++        return JS_TRUE;
++    }
++
+ };
+   
+ } /* namespace js { */
+ 
+ #endif /* #ifndef jsfoundprop_h_ */
+diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
+--- a/js/src/jsobj.cpp
++++ b/js/src/jsobj.cpp
+@@ -2139,21 +2139,19 @@ DefinePropertyOnObject(JSContext *cx, JS
+                  * for now we'll simply forbid their redefinition.
+                  */
+                 if (!sprop->configurable() &&
+                     (!sprop->hasDefaultGetter() || !sprop->hasDefaultSetter())) {
+                     return Reject(cx, &found, JSMSG_CANT_REDEFINE_UNCONFIGURABLE_PROP,
+                                   throwError, desc.id, rval);
+                 }
+ 
+-                if (!js_NativeGet(cx, obj, found.where(), sprop,
+-                                  JSGET_NO_METHOD_BARRIER, &v)) {
++                if (!found.nativeGetValue(cx, obj, &v, JSGET_NO_METHOD_BARRIER))
+                     /* current was dropped when the failure occurred. */
+                     return JS_FALSE;
+-                }
+             }
+ 
+             if (desc.isDataDescriptor()) {
+                 if (!sprop->isDataDescriptor())
+                     break;
+ 
+                 if (desc.hasValue && !js_SameValue(desc.value, v, cx))
+                     break;
+@@ -4840,21 +4838,17 @@ js_GetPropertyHelper(JSContext *cx, JSOb
+ 
+     sprop = found.sprop();
+ 
+     if (getHow & JSGET_CACHE_RESULT) {
+         JS_ASSERT_NOT_ON_TRACE(cx);
+         JS_PROPERTY_CACHE(cx).fill(cx, aobj, 0, protoIndex, found.where(), sprop);
+     }
+ 
+-    if (!js_NativeGet(cx, obj, found.where(), sprop, getHow, vp))
+-        // TODO Re-lock?
+-        return JS_FALSE;
+-
+-    return JS_TRUE;
++    return found.nativeGetValue(cx, obj, vp, getHow);
+ }
+ 
+ JSBool
+ js_GetProperty(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
+ {
+     return js_GetPropertyHelper(cx, obj, id, JSGET_METHOD_BARRIER, vp);
+ }
+ 
+diff --git a/js/src/jstypedarray.cpp b/js/src/jstypedarray.cpp
+--- a/js/src/jstypedarray.cpp
++++ b/js/src/jstypedarray.cpp
+@@ -536,18 +536,17 @@ class TypedArrayTemplate
+             }
+ 
+             *vp = JSVAL_VOID;
+             JSFoundProperty found(id);
+             if (js_LookupPropertyWithFlags(cx, proto, id, cx->resolveFlags, &found) < 0)
+                 return false;
+ 
+             if (found.inScope() &&
+-                !js_NativeGet(cx, obj, found.where(), found.sprop(),
+-                              JSGET_METHOD_BARRIER, vp))
++                !found.nativeGetValue(cx, obj, vp))
+                 return false;
+         }
+ 
+         return true;
+     }
+ 
+     static JSBool
+     obj_setProperty(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
