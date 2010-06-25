@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 1d1990b462f94915cee0cb072a9735e35716817b
+# Parent 0ddd7cb7c96a680b9375b43a2d8ba2c2cb1577b7
 
 diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 --- a/js/src/jsobj.cpp
@@ -26,15 +26,18 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      JSResolvingEntry *entry;
      if (!js_StartResolving(cx, &key, JSRESFLAG_LOOKUP, &entry)) {
          JS_UNLOCK_OBJ(cx, obj);
-         return false;
+-        return false;
++        return JS_FALSE;
      }
      if (!entry) {
          /* Already resolving id in obj -- suppress recursion. */
          JS_UNLOCK_OBJ(cx, obj);
          *recursedp = true;
-         return true;
-     }
+-        return true;
+-    }
 -    uint32 generation = cx->resolvingTable->generation;
++        return JS_TRUE;
++    }
      *recursedp = false;
  
 +    const struct AutoStopResolving {
