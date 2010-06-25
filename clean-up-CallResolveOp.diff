@@ -4,7 +4,39 @@
 diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
 --- a/js/src/jsobj.cpp
 +++ b/js/src/jsobj.cpp
-@@ -4307,73 +4307,74 @@ js_LookupProperty(JSContext *cx, JSObjec
+@@ -4282,98 +4282,99 @@ js_LookupProperty(JSContext *cx, JSObjec
+ #define SCOPE_DEPTH_ACCUM(bs,val)                                             \
+     JS_SCOPE_DEPTH_METERING(JS_BASIC_STATS_ACCUM(bs, val))
+ 
+ /*
+  * Call obj's resolve hook. obj is a native object and the caller holds its
+  * scope lock.
+  *
+  * cx, start, id, and flags are the parameters initially passed to the ongoing
+- * lookup; objp and propp are its out parameters. obj is an object along
+- * start's prototype chain.
++ * lookup; found is its out parameter. obj is an object along start's prototype
++ * chain.
+  *
+  * There are four possible outcomes:
+  *
+  *   - On failure, report an error or exception, unlock obj, and return false.
+  *
+- *   - If we are alrady resolving a property of *curobjp, set *recursedp = true,
++ *   - If we are already resolving a property of obj, set *recursedp = true,
+  *     unlock obj, and return true.
+  *
+- *   - If the resolve hook finds or defines the sought property, set *objp and
+- *     *propp appropriately, set *recursedp = false, and return true with *objp's
+- *     lock held.
++ *   - If the resolve hook finds or defines the sought property, set found
++ *     appropriately, set *recursedp = false, and return true with
++ *     found->where()'s lock held.
+  *
+- *   - Otherwise no property was resolved. Set *propp = NULL and *recursedp = false
++ *   - Otherwise no property was resolved. Clear found, set *recursedp = false,
+  *     and return true.
+  */
  static JSBool
  CallResolveOp(JSContext *cx, JSObject *start, JSObject *obj, jsid id, uintN flags,
                JSFoundProperty *found, bool *recursedp)
