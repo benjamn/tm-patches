@@ -3,4 +3,5 @@ poison.diff
 antidote.diff
 clean-up-CallResolveOp.diff
 nativeGetValue.diff
+virtual.diff
 #exploration.diff

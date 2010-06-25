@@ -1,0 +1,46 @@
+# HG changeset patch
+# Parent 44dcfbd31c340d631f492f9d5273c0e57b97a21e
+
+diff --git a/js/src/jsapi.h b/js/src/jsapi.h
+--- a/js/src/jsapi.h
++++ b/js/src/jsapi.h
+@@ -1422,26 +1422,38 @@ struct JSExtendedClass {
+     JSClass             base;
+     JSEqualityOp        equality;
+     JSObjectOp          outerObject;
+     JSObjectOp          innerObject;
+     JSIteratorOp        iteratorObject;
+     JSObjectOp          wrappedObject;          /* NB: infallible, null
+                                                    returns are treated as
+                                                    the original object */
++
++    JSBool (*hasOwnVirtualProperty)(JSContext *cx, JSObject *obj, jsid id,
++                                    JSBool *foundp);
++    JSBool (*getOwnVirtualProperty)(JSContext *cx, JSObject *obj, jsid id,
++                                    jsval *vp);
++    JSBool (*setOwnVirtualProperty)(JSContext *cx, JSObject *obj, jsid id,
++                                    jsval *vp);
++    JSBool (*getOwnVirtualDescriptor)(JSContext *cx, JSObject *obj, jsid id,
++                                      JSPropertyDescriptor *desc);
++
+     void                (*reserved0)(void);
+     void                (*reserved1)(void);
+     void                (*reserved2)(void);
+ };
+ 
+ #define JSCLASS_HAS_PRIVATE             (1<<0)  /* objects have private slot */
+ #define JSCLASS_NEW_ENUMERATE           (1<<1)  /* has JSNewEnumerateOp hook */
+ #define JSCLASS_NEW_RESOLVE             (1<<2)  /* has JSNewResolveOp hook */
+ #define JSCLASS_PRIVATE_IS_NSISUPPORTS  (1<<3)  /* private is (nsISupports *) */
+-/* (1<<4) was JSCLASS_SHARE_ALL_PROPERTIES, now obsolete. See bug 527805. */
++#define JSCLASS_VIRTUAL_RESOLVE         (1<<4)  /* has JSVirtualResolveOp
++                                                   hook */
++/* JSCLASS_SHARE_ALL_PROPERTIES is now obsolete. See bug 527805. */
+ #define JSCLASS_NEW_RESOLVE_GETS_START  (1<<5)  /* JSNewResolveOp gets starting
+                                                    object in prototype chain
+                                                    passed in via *objp in/out
+                                                    parameter */
+ #define JSCLASS_CONSTRUCT_PROTOTYPE     (1<<6)  /* call constructor on class
+                                                    prototype */
+ #define JSCLASS_DOCUMENT_OBSERVER       (1<<7)  /* DOM document observer */
+ 
