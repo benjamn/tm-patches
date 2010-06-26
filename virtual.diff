@@ -1,10 +1,10 @@
 # HG changeset patch
-# Parent 44dcfbd31c340d631f492f9d5273c0e57b97a21e
+# Parent beaa93d4f6b523d61d3ababb0a68262a83d76584
 
 diff --git a/js/src/jsapi.h b/js/src/jsapi.h
 --- a/js/src/jsapi.h
 +++ b/js/src/jsapi.h
-@@ -1422,26 +1422,38 @@ struct JSExtendedClass {
+@@ -1455,26 +1455,44 @@ struct JSExtendedClass {
      JSClass             base;
      JSEqualityOp        equality;
      JSObjectOp          outerObject;
@@ -13,7 +13,13 @@ diff --git a/js/src/jsapi.h b/js/src/jsapi.h
      JSObjectOp          wrappedObject;          /* NB: infallible, null
                                                     returns are treated as
                                                     the original object */
-+
++    /*
++     * All or none of these virtual property hooks must be null.  If non-null,
++     * they will be consulted by the engine after it checks for real (in-scope)
++     * properties.  These hooks are not themselves required to be aware of real
++     * properties; for instance, if implementing an array-like class, these
++     * hooks would only need to know about the array elements, not .length.
++     */
 +    JSBool (*hasOwnVirtualProperty)(JSContext *cx, JSObject *obj, jsid id,
 +                                    JSBool *foundp);
 +    JSBool (*getOwnVirtualProperty)(JSContext *cx, JSObject *obj, jsid id,
