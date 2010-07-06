@@ -1050,7 +1050,7 @@ diff --git a/js/src/jsinterp.cpp b/js/src/jsinterp.cpp
                  return JS_FALSE;
              isFunction = VALUE_IS_FUNCTION(cx, value);
          }
-@@ -2077,29 +2073,27 @@ js_Interpret(JSContext *cx)
+@@ -2080,29 +2076,27 @@ js_Interpret(JSContext *cx)
  
      JSRuntime *rt;
      JSStackFrame *fp;
@@ -1124,7 +1124,7 @@ diff --git a/js/src/jsiter.cpp b/js/src/jsiter.cpp
  #include "jscntxtinlines.h"
  #include "jsobjinlines.h"
  #include "jsstrinlines.h"
-@@ -729,28 +730,25 @@ js_SuppressDeletedProperty(JSContext *cx
+@@ -761,28 +762,25 @@ js_SuppressDeletedProperty(JSContext *cx
              for (jsid *idp = props_cursor; idp < props_end; ++idp) {
                  if (*idp == id) {
                      /*
@@ -1679,7 +1679,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      return js_NewPropertyDescriptorObject(cx, id,
                                            attrs,
-@@ -2036,39 +2019,39 @@ Reject(JSContext *cx, uintN errorNumber,
+@@ -2054,39 +2037,39 @@ Reject(JSContext *cx, uintN errorNumber,
          return JS_FALSE;
      }
  
@@ -1725,7 +1725,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
          if (desc.isGenericDescriptor() || desc.isDataDescriptor()) {
              JS_ASSERT(obj->map->ops->defineProperty == js_DefineProperty);
              return js_DefineProperty(cx, obj, desc.id, desc.value,
-@@ -2096,19 +2079,24 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2114,19 +2097,24 @@ DefinePropertyOnObject(JSContext *cx, JS
      /*
       * In the special case of shared permanent properties, the "own" property
       * can be found on a different object.  In that case the returned property
@@ -1753,7 +1753,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
              if (desc.hasGet &&
                  !js_SameValue(desc.getterValue(),
                                sprop->hasGetterValue() ? sprop->getterValue() : JSVAL_VOID,
-@@ -2151,21 +2139,22 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2169,21 +2157,22 @@ DefinePropertyOnObject(JSContext *cx, JS
                   * &c.).  Longer-term perhaps we should convert such properties
                   * to use data descriptors (at which point representing a
                   * descriptor with native getter/setter as an accessor
@@ -1778,7 +1778,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
              if (desc.isDataDescriptor()) {
                  if (!sprop->isDataDescriptor())
                      break;
-@@ -2181,70 +2170,70 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2199,70 +2188,70 @@ DefinePropertyOnObject(JSContext *cx, JS
          }
  
          if (desc.hasConfigurable && desc.configurable() != sprop->configurable())
@@ -1854,7 +1854,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      /* 8.12.9 step 12. */
      uintN attrs;
      JSPropertyOp getter, setter;
-@@ -2279,19 +2268,19 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2297,19 +2286,19 @@ DefinePropertyOnObject(JSContext *cx, JS
      } else {
          JS_ASSERT(desc.isAccessorDescriptor());
  
@@ -1877,7 +1877,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
              changed |= JSPROP_PERMANENT;
          if (desc.hasEnumerable)
              changed |= JSPROP_ENUMERATE;
-@@ -2314,17 +2303,17 @@ DefinePropertyOnObject(JSContext *cx, JS
+@@ -2332,17 +2321,17 @@ DefinePropertyOnObject(JSContext *cx, JS
          } else {
              setter = (sprop->hasDefaultSetter() && !sprop->hasSetterValue())
                       ? JS_PropertyStub
@@ -1896,7 +1896,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                        bool throwError, bool *rval)
  {
      /*
-@@ -2845,26 +2834,26 @@ js_InferFlags(JSContext *cx, uintN defau
+@@ -2887,26 +2876,26 @@ js_InferFlags(JSContext *cx, uintN defau
          flags |= JSRESOLVE_DECLARING;
      return flags;
  }
@@ -1926,7 +1926,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      return obj->getProto()->getProperty(cx, id, vp);
  }
  
-@@ -3781,21 +3770,19 @@ js_SetClassObject(JSContext *cx, JSObjec
+@@ -3823,21 +3812,19 @@ js_SetClassObject(JSContext *cx, JSObjec
             js_SetReservedSlot(cx, obj, JSProto_LIMIT + key, OBJECT_TO_JSVAL(proto));
  }
  
@@ -1949,7 +1949,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
       */
      VOUCH_DOES_NOT_REQUIRE_STACK();
      if (!start && (fp = cx->fp) != NULL)
-@@ -3832,29 +3819,29 @@ js_FindClassObject(JSContext *cx, JSObje
+@@ -3874,29 +3861,29 @@ js_FindClassObject(JSContext *cx, JSObje
      } else {
          JSAtom *atom = js_Atomize(cx, clasp->name, strlen(clasp->name), 0);
          if (!atom)
@@ -1985,7 +1985,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  JSObject *
  js_ConstructObject(JSContext *cx, JSClass *clasp, JSObject *proto,
                     JSObject *parent, uintN argc, jsval *argv)
-@@ -4170,46 +4157,44 @@ js_DefineNativeProperty(JSContext *cx, J
+@@ -4212,46 +4199,44 @@ js_DefineNativeProperty(JSContext *cx, J
  
      /*
       * If defining a getter or setter, we must check for its counterpart and
@@ -2039,7 +2039,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
       * Purge the property cache of any properties named by id that are about
       * to be shadowed in obj's scope chain unless it is known a priori that it
       * is not possible. We do this before locking obj to avoid nesting locks.
-@@ -4298,21 +4283,19 @@ js_DefineNativeProperty(JSContext *cx, J
+@@ -4340,21 +4325,19 @@ js_DefineNativeProperty(JSContext *cx, J
      return JS_TRUE;
  
  error: // TRACE_2 jumps here on error, as well.
@@ -2064,7 +2064,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  /*
   * Call obj's resolve hook. obj is a native object and the caller holds its
   * scope lock.
-@@ -4332,17 +4315,17 @@ js_LookupProperty(JSContext *cx, JSObjec
+@@ -4374,17 +4357,17 @@ js_LookupProperty(JSContext *cx, JSObjec
   *     *propp appropriately, set *recursedp = false, and return true with *objp's
   *     lock held.
   *
@@ -2083,7 +2083,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      /*
       * Avoid recursion on (obj, id) already being resolved on cx.
       *
-@@ -4361,48 +4344,48 @@ CallResolveOp(JSContext *cx, JSObject *s
+@@ -4403,48 +4386,48 @@ CallResolveOp(JSContext *cx, JSObject *s
          /* Already resolving id in obj -- suppress recursion. */
          JS_UNLOCK_OBJ(cx, obj);
          *recursedp = true;
@@ -2136,7 +2136,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                   * do for old-style resolve.  If it doesn't, then
                   * id was not truly resolved, and we'll find it in
                   * the proto chain, or miss it if obj2's proto is
-@@ -4437,181 +4420,174 @@ CallResolveOp(JSContext *cx, JSObject *s
+@@ -4479,181 +4462,174 @@ CallResolveOp(JSContext *cx, JSObject *s
          scope = obj->scope();
          if (!scope->isSharedEmpty())
              sprop = scope->lookup(id);
@@ -2346,7 +2346,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
      /*
       * This function should not be called for a global object or from the
       * trace and should have a valid cache entry for native scopeChain.
-@@ -4628,53 +4604,49 @@ js_FindIdentifierBase(JSContext *cx, JSO
+@@ -4670,53 +4646,49 @@ js_FindIdentifierBase(JSContext *cx, JSO
       * js_Interpret.
       *
       * The test order here matters because js_IsCacheableNonGlobalScope
@@ -2412,7 +2412,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
           * chain during JSObject::lookupProperty. So we must check if parent is
           * not null here even if it wasn't before the lookup.
           */
-@@ -4796,32 +4768,32 @@ js_NativeSet(JSContext *cx, JSObject *ob
+@@ -4838,32 +4810,32 @@ js_NativeSet(JSContext *cx, JSObject *ob
  
      return true;
  }
@@ -2450,7 +2450,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
          PCMETER(getHow & JSGET_CACHE_RESULT && JS_PROPERTY_CACHE(cx).nofills++);
  
          /*
-@@ -4872,30 +4844,30 @@ js_GetPropertyHelper(JSContext *cx, JSOb
+@@ -4914,30 +4886,30 @@ js_GetPropertyHelper(JSContext *cx, JSOb
                                            JSDVG_IGNORE_STACK, ID_TO_VALUE(id),
                                            NULL, NULL, NULL)) {
                  return JS_FALSE;
@@ -2490,7 +2490,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  {
      return js_GetPropertyHelper(cx, obj, id, JSGET_METHOD_BARRIER, vp);
  }
-@@ -4956,20 +4928,17 @@ ReportReadOnly(JSContext* cx, jsid id, u
+@@ -4998,20 +4970,17 @@ ReportReadOnly(JSContext* cx, jsid id, u
   * SetPropHit when called from the interpreter, which is detected by testing
   * (defineHow & JSDNP_CACHE_RESULT).
   */
@@ -2511,7 +2511,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      JS_ASSERT((defineHow &
                 ~(JSDNP_CACHE_RESULT | JSDNP_SET_METHOD | JSDNP_UNQUALIFIED)) == 0);
-@@ -4981,71 +4950,62 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -5023,71 +4992,62 @@ js_SetPropertyHelper(JSContext *cx, JSOb
  
      /*
       * We peek at obj->scope() without locking obj. Any race means a failure
@@ -2595,7 +2595,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                  }
  
                  /* Warn in strict mode, otherwise do nothing. */
-@@ -5054,38 +5014,37 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -5096,38 +5056,37 @@ js_SetPropertyHelper(JSContext *cx, JSOb
                  return JS_TRUE;
  
  #ifdef JS_TRACER
@@ -2639,7 +2639,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
                  return sprop->set(cx, obj, vp);
              }
-@@ -5108,33 +5067,29 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -5150,33 +5109,29 @@ js_SetPropertyHelper(JSContext *cx, JSOb
              }
  
              /*
@@ -2674,7 +2674,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
          /*
           * Check for Object class here to avoid defining a method on a class
           * with magic resolve, addProperty, getProperty, etc. hooks.
-@@ -5179,42 +5134,40 @@ js_SetPropertyHelper(JSContext *cx, JSOb
+@@ -5221,42 +5176,40 @@ js_SetPropertyHelper(JSContext *cx, JSOb
          JS_ASSERT_NOT_ON_TRACE(cx);
          PropertyCacheEntry *entry = JS_PROPERTY_CACHE(cx).fill(cx, obj, 0, 0, obj, sprop, added);
          TRACE_2(SetPropHit, entry, sprop);
@@ -2725,7 +2725,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
                         uintN attrs)
  {
      JS_ASSERT(obj->isNative());
-@@ -5222,88 +5175,91 @@ js_SetNativeAttributes(JSContext *cx, JS
+@@ -5264,88 +5217,91 @@ js_SetNativeAttributes(JSContext *cx, JS
                                           sprop->getter(), sprop->setter());
      JS_UNLOCK_OBJ(cx, obj);
      return (sprop != NULL);
@@ -2843,7 +2843,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  {
      jsval v, save;
      JSString *str;
-@@ -5423,19 +5379,17 @@ js_Enumerate(JSContext *cx, JSObject *ob
+@@ -5465,19 +5421,17 @@ js_Enumerate(JSContext *cx, JSObject *ob
  namespace js {
  
  JSBool
@@ -2863,7 +2863,7 @@ diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
  
      writing = (mode & JSACC_WRITE) != 0;
      switch (mode & JSACC_TYPEMASK) {
-@@ -5448,43 +5402,45 @@ CheckAccess(JSContext *cx, JSObject *obj
+@@ -5490,43 +5444,45 @@ CheckAccess(JSContext *cx, JSObject *obj
  
        case JSACC_PARENT:
          JS_ASSERT(!writing);
@@ -2941,7 +2941,7 @@ diff --git a/js/src/jsobj.h b/js/src/jsobj.h
                            uintN attrs = JSPROP_ENUMERATE) {
          return map->ops->defineProperty(cx, this, id, value, getter, setter, attrs);
      }
-@@ -901,17 +900,17 @@ extern void
+@@ -899,17 +898,17 @@ extern void
  js_TraceSharpMap(JSTracer *trc, JSSharpObjectMap *map);
  
  extern JSBool
@@ -2960,7 +2960,7 @@ diff --git a/js/src/jsobj.h b/js/src/jsobj.h
  js_PropertyIsEnumerable(JSContext *cx, JSObject *obj, jsid id, jsval *vp);
  
  #ifdef OLD_GETTER_SETTER_METHODS
-@@ -1076,28 +1075,27 @@ js_DefineNativeProperty(JSContext *cx, J
+@@ -1074,28 +1073,27 @@ js_DefineNativeProperty(JSContext *cx, J
  /*
   * Unlike js_DefineNativeProperty, propp must be non-null. On success, and if
   * id was found, return true with *objp non-null and locked, and with a held
@@ -2992,7 +2992,7 @@ diff --git a/js/src/jsobj.h b/js/src/jsobj.h
   */
  static inline bool
  js_IsCacheableNonGlobalScope(JSObject *obj)
-@@ -1115,25 +1113,25 @@ js_IsCacheableNonGlobalScope(JSObject *o
+@@ -1113,25 +1111,25 @@ js_IsCacheableNonGlobalScope(JSObject *o
      return cacheable;
  }
  
@@ -3511,7 +3511,7 @@ diff --git a/js/src/jsops.cpp b/js/src/jsops.cpp
          }
      }
  
-     if (!js_InvokeConstructor(cx, InvokeArgsGuard(vp, argc), JS_FALSE))
+     if (!js_InvokeConstructor(cx, InvokeArgsGuard(vp, argc)))
          goto error;
      regs.sp = vp + 1;
 @@ -2169,65 +2178,68 @@ BEGIN_CASE(JSOP_SETCALL)
@@ -4055,7 +4055,7 @@ diff --git a/js/src/jsproxy.cpp b/js/src/jsproxy.cpp
  namespace js {
  
  static jsval
-@@ -819,30 +820,28 @@ JSProxy::obj_toString(JSContext *cx, JSO
+@@ -805,30 +806,28 @@ JSProxy::obj_toString(JSContext *cx, JSO
  JSString *
  JSProxy::fun_toString(JSContext *cx, JSObject *proxy, uintN indent)
  {
@@ -4116,7 +4116,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
  #include "jsscopeinlines.h"
  #include "jsscriptinlines.h"
  
-@@ -7872,27 +7873,26 @@ JS_REQUIRES_STACK AbortableRecordingStat
+@@ -7875,27 +7876,26 @@ JS_REQUIRES_STACK AbortableRecordingStat
  TraceRecorder::scopeChainProp(JSObject* chainHead, jsval*& vp, LIns*& ins, NameResult& nr)
  {
      JS_ASSERT(chainHead == cx->fp->scopeChain);
@@ -4147,7 +4147,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
          // of the scope chain.
          LIns *head_ins;
          if (cx->fp->argv) {
-@@ -7902,57 +7902,54 @@ TraceRecorder::scopeChainProp(JSObject* 
+@@ -7905,57 +7905,54 @@ TraceRecorder::scopeChainProp(JSObject* 
              chainHead = cx->fp->calleeObject()->getParent();
              head_ins = stobj_get_parent(get(&cx->fp->argv[-2]));
          } else {
@@ -4219,7 +4219,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
      uintN slot = uint16(sprop->shortid);
  
      vp = NULL;
-@@ -9212,73 +9209,71 @@ TraceRecorder::test_property_cache(JSObj
+@@ -9216,73 +9213,71 @@ TraceRecorder::test_property_cache(JSObj
      if (!aobj->isNative())
          RETURN_STOP_A("non-native object");
  
@@ -4309,7 +4309,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
      // There's a potential race in any JS_THREADSAFE embedding that's nuts
      // enough to share mutable objects on the scope or proto chain, but we
      // don't care about such insane embeddings. Anyway, the (scope, proto)
-@@ -11889,21 +11884,21 @@ TraceRecorder::getPropertyById(LIns* obj
+@@ -11883,21 +11878,21 @@ TraceRecorder::getPropertyById(LIns* obj
  
  /* Manually inlined, specialized copy of js_NativeGet. */
  static JSBool FASTCALL
@@ -4336,7 +4336,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
      JS_ASSERT(obj->getClass() != &js_WithClass);
  
      *vp = JSVAL_VOID;
-@@ -14174,33 +14169,31 @@ TraceRecorder::record_JSOP_IN()
+@@ -14168,33 +14163,31 @@ TraceRecorder::record_JSOP_IN()
      }
  
      guard(false, lir->ins2ImmI(LIR_eqi, x, JSVAL_TO_SPECIAL(JSVAL_VOID)), OOM_EXIT);
@@ -4379,7 +4379,7 @@ diff --git a/js/src/jstracer.cpp b/js/src/jstracer.cpp
 diff --git a/js/src/jstracer.h b/js/src/jstracer.h
 --- a/js/src/jstracer.h
 +++ b/js/src/jstracer.h
-@@ -1171,17 +1171,17 @@ class TraceRecorder
+@@ -1173,17 +1173,17 @@ class TraceRecorder
          JSScopeProperty  *sprop;         // sprop name was resolved to
      };
  
@@ -4807,7 +4807,7 @@ diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
  #ifdef JSDEBUGGER_JAVA_UI
  #include "jsdjava.h"
  #endif /* JSDEBUGGER_JAVA_UI */
-@@ -2015,18 +2016,16 @@ DumpScope(JSContext *cx, JSObject *obj, 
+@@ -2013,18 +2014,16 @@ DumpScope(JSContext *cx, JSObject *obj, 
  
  static JSBool
  DumpStats(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
@@ -4826,7 +4826,7 @@ diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
              return JS_FALSE;
          argv[i] = STRING_TO_JSVAL(str);
          bytes = JS_GetStringBytes(str);
-@@ -2036,24 +2035,26 @@ DumpStats(JSContext *cx, JSObject *obj, 
+@@ -2034,24 +2033,26 @@ DumpStats(JSContext *cx, JSObject *obj, 
  #endif
          } else if (strcmp(bytes, "atom") == 0) {
              js_DumpAtoms(cx, gOutFile);
@@ -4857,7 +4857,7 @@ diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
              if (obj)
                  DumpScope(cx, obj, stdout);
          }
-@@ -2670,25 +2671,24 @@ split_resolve(JSContext *cx, JSObject *o
+@@ -2669,25 +2670,24 @@ split_resolve(JSContext *cx, JSObject *o
                                   JSPROP_SHARED);
      }
  
