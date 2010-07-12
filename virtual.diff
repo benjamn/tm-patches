@@ -37,3 +37,103 @@ diff --git a/js/src/jsapi.h b/js/src/jsapi.h
  #define JSCLASS_HAS_PRIVATE             (1<<0)  /* objects have private slot */
  #define JSCLASS_NEW_ENUMERATE           (1<<1)  /* has JSNewEnumerateOp hook */
  #define JSCLASS_NEW_RESOLVE             (1<<2)  /* has JSNewResolveOp hook */
+diff --git a/js/src/jsobj.cpp b/js/src/jsobj.cpp
+--- a/js/src/jsobj.cpp
++++ b/js/src/jsobj.cpp
+@@ -4351,17 +4351,16 @@ js_LookupProperty(JSContext *cx, JSObjec
+  *     and return true.
+  */
+ static JSBool
+ CallResolveOp(JSContext *cx, JSObject *start, JSObject *obj, jsid id, uintN flags,
+               JSFoundProperty *found, bool *recursedp)
+ {
+     JSClass *clasp = obj->getClass();
+     JSResolveOp resolve = clasp->resolve;
+-    JSScope *scope = obj->scope();
+ 
+     /* Avoid recursion on (obj, id) already being resolved on cx. */
+     JSResolvingKey key = {obj, id};
+     JSResolvingEntry *entry;
+     if (!js_StartResolving(cx, &key, JSRESFLAG_LOOKUP, &entry)) {
+         JS_UNLOCK_OBJ(cx, obj);
+         return JS_FALSE;
+     }
+@@ -4380,17 +4379,16 @@ CallResolveOp(JSContext *cx, JSObject *s
+         uint32 generation;
+         ~AutoStopResolving() {
+             js_StopResolving(cx, keyPtr, JSRESFLAG_LOOKUP, entry, generation);
+         }
+     } asr = { cx, &key, entry, cx->resolvingTable->generation };
+ 
+     JS_ASSERT(!found->wasFound());
+ 
+-    JSScopeProperty *sprop = NULL;
+     if (clasp->flags & JSCLASS_NEW_RESOLVE) {
+         if (flags == JSRESOLVE_INFER)
+             flags = js_InferFlags(cx, flags);
+         JSObject *obj2 = (clasp->flags & JSCLASS_NEW_RESOLVE_GETS_START) ? start : NULL;
+         JS_UNLOCK_OBJ(cx, obj);
+ 
+         {
+             /* Protect id and all atoms from a GC nested in resolve. */
+@@ -4420,50 +4418,42 @@ CallResolveOp(JSContext *cx, JSObject *s
+                 /*
+                  * Require that obj2 have its own scope now, as we
+                  * do for old-style resolve.  If it doesn't, then
+                  * id was not truly resolved, and we'll find it in
+                  * the proto chain, or miss it if obj2's proto is
+                  * not on obj's proto chain.  That last case is a
+                  * "too bad!" case.
+                  */
+-                scope = obj2->scope();
+-                if (!scope->isSharedEmpty())
+-                    sprop = scope->lookup(id);
++                JSScope *scope = obj2->scope();
++                found->setWithSProp(cx, obj2, (scope->isSharedEmpty() ? NULL :
++                                               scope->lookup(id)));
+             }
+-            if (sprop) {
+-                JS_ASSERT(scope == obj2->scope());
+-                JS_ASSERT(!scope->isSharedEmpty());
+-                obj = obj2;
+-            } else if (obj2 != obj) {
++            if (!found->wasFound() && obj2 != obj) {
+                 if (obj2->isNative())
+                     JS_UNLOCK_OBJ(cx, obj2);
+                 JS_LOCK_OBJ(cx, obj);
+             }
+         }
+     } else {
+         /*
+          * Old resolve always requires id re-lookup if obj owns
+          * its scope after resolve returns.
+          */
+         JS_UNLOCK_OBJ(cx, obj);
+         if (!resolve(cx, obj, ID_TO_VALUE(id)))
+             return JS_FALSE;
+         JS_LOCK_OBJ(cx, obj);
+         JS_ASSERT(obj->isNative());
+-        scope = obj->scope();
+-        if (!scope->isSharedEmpty())
+-            sprop = scope->lookup(id);
+-    }
+-
+-    if (!sprop)
+-        obj = NULL;
+-
+-    /* Use asr.cx just to suppress spurious unused variable warnings. */
+-    found->setWithSProp(asr.cx, obj, sprop);
++
++        JSScope *scope = obj->scope();
++        /* Use asr.cx just to suppress spurious unused variable warnings. */
++        found->setWithSProp(asr.cx, obj, (scope->isSharedEmpty() ? NULL :
++                                          scope->lookup(id)));
++    }
+ 
+     return JS_TRUE;
+ }
+ 
+ int
+ js_LookupPropertyWithFlags(JSContext *cx, JSObject *obj, jsid id, uintN flags,
+                            JSFoundProperty *found)
+ {
